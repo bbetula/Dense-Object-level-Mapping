@@ -1,9 +1,12 @@
 ftfy
+iopath
 omegaconf
+pandas
 regex
 scikit-learn
+scikit-learn-intelex
 submitit
 termcolor
 torch
-torchmetrics
 torchvision
+torchmetrics

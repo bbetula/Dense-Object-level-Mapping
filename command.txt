@@ -1,0 +1,16 @@
+conda create -n dinov3 python=3.11 -y
+conda config --prepend envs_dirs /data1/user/miniconda3/envs
+conda config --prepend pkgs_dirs /data1/user/miniconda3/pkgs
+conda remove -n dinov3 --all
+conda config --show envs_dirs
+pkgs_dirs:
+  - /data1/user/miniconda3/pkgs
+envs_dirs:
+  - /data1/user/miniconda3/envs
+
+git add .
+git commit -m "some important images"
+git push origin main -f
+git remote -v
+
+pip install -r ./dinov3/requirements.txt 
