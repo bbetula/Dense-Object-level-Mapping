@@ -6,29 +6,30 @@ os.environ['TORCH_HUB_DISABLE_DOWNLOAD'] = '1'
 os.environ['HF_HUB_OFFLINE'] = '1'
 import torch
 from torchvision import transforms
-import matplotlib.pyplot as plt
-from matplotlib import colormaps
 from functools import partial
 from dinov3.eval.segmentation.inference import make_inference
 from hubconf import dinov3_vit7b16_ms
 import numpy as np
 import cv2
 import time
+import yaml
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
-
-REPO_DIR="/mnt/DATA1/bbetula/dinov3"
+REPO_DIR="/data1/user/Dense-Object-level-Mapping/dinov3"
 sys.path.append(REPO_DIR)
+# 7B ViT + Mask2Former 头
 HEAD_DIR="checkpoint/dinov3_pretrained/DINOv3 Adapters/dinov3_vit7b16_ade20k_m2f_head-bf307cb1.pth"
 BACKBONE_DIR="checkpoint/dinov3_pretrained/DINOv3 ViT LVD-1689M/dinov3_vit7b16_pretrain_lvd1689m-a955f4ea.pth"
-# image_path="/mnt/DATA1/bbetula/GroundedSAM/Grounded-SAM-2-main/notebooks/selected_images/1590194895899498940.png"
-image_path="/mnt/DATA1/bbetula/GroundedSAM/Grounded-SAM-2-main/datasets/leftImg8bit/test/berlin/berlin_000000_000019_leftImg8bit.png"
+PALETTE_FILE = os.path.join(REPO_DIR, "yaml", "ADE20k.yaml")
+
+# Large ViT + Mask2Former 头
+# HEAD_DIR
+# BACKBONE_DIR="checkpoint/dinov3_pretrained/DINOv3 ViT LVD-1689M/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth"
+# PALETTE_FILE = os.path.join(REPO_DIR, "yaml", "cityscape.yaml")
+
+image_path="/data1/user/data/cityscape/leftImg8bit/test/berlin/berlin_000000_000019_leftImg8bit.png"
 output_path="output/"
 
-def get_img():
-    import requests
-    url = "http://images.cocodataset.org/val2017/000000039769.jpg"
-    image = Image.open(requests.get(url, stream=True).raw).convert("RGB")
-    return image
 
 def make_transform(resize_size: int | list[int] = 768):
     to_tensor = transforms.ToTensor()
@@ -39,12 +40,15 @@ def make_transform(resize_size: int | list[int] = 768):
     )
     return transforms.Compose([to_tensor, resize, normalize])
 
-def apply_colormap(mask, colormap_name='Spectral'):
-    mask_normalized = (mask - mask.min()) / (mask.max() - mask.min()) if mask.max() > mask.min() else mask
-    cmap = colormaps[colormap_name]
-    colored_mask = cmap(mask_normalized)
-    colored_mask_rgb = (colored_mask[:, :, :3] * 255).astype(np.uint8)
-    return colored_mask_rgb
+def load_palette(palette_file: str) -> np.ndarray:
+    with open(palette_file, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    return np.array(data["palette"], dtype=np.uint8)
+
+palette_array = load_palette(PALETTE_FILE)
+def colorize_mask(mask: np.ndarray, palette: np.ndarray) -> np.ndarray:
+    indices = np.clip(mask.astype(np.int64), 0, len(palette) - 1)
+    return palette[indices]
 
 # segmentor = torch.hub.load(REPO_DIR, 'dinov3_vit7b16_ms', source="local", weights=HEAD_DIR, backbone_weights=BACKBONE_DIR)
 segmentor = dinov3_vit7b16_ms(pretrained=True, weights=HEAD_DIR, backbone_weights=BACKBONE_DIR, check_hash=False)
@@ -62,7 +66,7 @@ with torch.inference_mode():
         segmentation_map_vit7b = make_inference(
             batch_img,
             segmentor,
-            inference_mode="slide",
+            inference_mode="whole", # slide: 分块处理; whole: 整图处理
             decoder_head_type="m2f", # Mask2Former
             rescale_to=(img.size[-1], img.size[-2]),
             n_output_channels=150, # ADE20K 150类别
@@ -72,8 +76,6 @@ with torch.inference_mode():
         ).argmax(dim=1, keepdim=True) # 每个像素得到最可能的语义类别
         end_time = time.time()
         print(f"inference time: {end_time - start_time:.2f}s")
-
-
 
 # 确保输出路径存在
 os.makedirs(output_path, exist_ok=True)
@@ -87,8 +89,8 @@ img_array = np.array(img)
 h, w = img_array.shape[:2]
 
 # 创建彩色分割掩码
-colored_mask = apply_colormap(mask, 'Spectral')
-colored_mask_resized = cv2.resize(colored_mask, (w, h))
+colored_mask = colorize_mask(mask, palette_array)
+colored_mask_resized = cv2.resize(colored_mask, (w, h), interpolation=cv2.INTER_NEAREST)
 
 # 创建组合图：原图（左）+ mask（右）
 combination = np.hstack([img_array, colored_mask_resized])
@@ -96,11 +98,3 @@ combination_output = os.path.join(output_path, f"{input_filename}_result.png")
 cv2.imwrite(combination_output, cv2.cvtColor(combination, cv2.COLOR_RGB2BGR))
 
 print(f"Result saved to: {combination_output}")
-
-# plt.figure(figsize=(12, 6))
-# plt.subplot(121)
-# plt.imshow(img)
-# plt.axis("off")
-# plt.subplot(122)
-# plt.imshow(segmentation_map_vit7b[0,0].cpu(), cmap=colormaps["Spectral"])
-# plt.axis("off")
