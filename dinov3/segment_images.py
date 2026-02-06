@@ -43,6 +43,10 @@ head_weights_url = "https://dinov3.llamameta.net/dinov3_vit7b16/dinov3_vit7b16_a
 segmentor = torch.hub.load(REPO_DIR, 'dinov3_vit7b16_ms', source="local", 
                             weights=head_weights_url, 
                             backbone_weights=backbone_weights_url)
+# move model to GPU and set eval mode to avoid dtype/device mismatches
+if torch.cuda.is_available():
+    segmentor.to("cuda")
+segmentor.eval()
 
 # load images
 images_dir = f"/home/czj/datasets/fastlivo_output_outdoor_1s/image"
@@ -86,15 +90,15 @@ for img_name in all_files:
     h, w = img_array.shape[:2]
     mask = segmentation_map_vit7b[0,0].cpu().numpy()
     colored_mask = colorize_mask(mask, palette_array)
-    colored_mask = cv2.resize(colored_mask, (w, h))
+    colored_mask = cv2.resize(colored_mask, (w, h), interpolation=cv2.INTER_NEAREST)
 
     image_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
     colored_mask_bgr = cv2.cvtColor(colored_mask, cv2.COLOR_RGB2BGR)
     overlay = cv2.addWeighted(image_bgr, 1, colored_mask_bgr, 0.5, 0)
 
-    cv2.imwrite(os.path.join(save_dir, f'{base_name}_original.jpg'), image_bgr)
-    print(f"保存到 {os.path.join(save_dir, f'{base_name}_original.jpg')}")
-    cv2.imwrite(os.path.join(save_dir, f'{base_name}_mask.jpg'), colored_mask_bgr)
-    print(f"保存到 {os.path.join(save_dir, f'{base_name}_mask.jpg')}")
-    cv2.imwrite(os.path.join(save_dir, f'{base_name}_overlap.jpg'), overlay)
-    print(f"保存到 {os.path.join(save_dir, f'{base_name}_overlap.jpg')}")
+    cv2.imwrite(os.path.join(save_dir, f'{base_name}_original.png'), image_bgr)
+    print(f"保存到 {os.path.join(save_dir, f'{base_name}_original.png')}")
+    cv2.imwrite(os.path.join(save_dir, f'{base_name}_mask.png'), colored_mask_bgr)
+    print(f"保存到 {os.path.join(save_dir, f'{base_name}_mask.png')}")
+    cv2.imwrite(os.path.join(save_dir, f'{base_name}_overlap.png'), overlay)
+    print(f"保存到 {os.path.join(save_dir, f'{base_name}_overlap.png')}")

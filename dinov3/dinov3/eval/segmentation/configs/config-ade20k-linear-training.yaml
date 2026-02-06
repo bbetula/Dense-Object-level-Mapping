@@ -22,7 +22,7 @@ optimizer:
   weight_decay: 1e-3
   gradient_clip: 'inf'
 datasets:
-  root: ""  # Path to the ADE20K dataset
+  root: "/home/czj/datasets/ADE20K_2021_17_01/images/ADE"  # Path to the ADE20K dataset
   train: "ADE20K:split=TRAIN"
   val: "ADE20K:split=VAL"
 train:
