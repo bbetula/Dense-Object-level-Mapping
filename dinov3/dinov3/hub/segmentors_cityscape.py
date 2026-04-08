@@ -32,13 +32,16 @@ def _make_dinov3_m2f_segmentor(
     autocast_dtype: torch.dtype = torch.bfloat16,
     **kwargs,
 ):
-    # Build backbone 这里只有7b16和l16两种
+    # Build backbone 7b16 or vitl16
+    backbone_local_path = backbone_weights if isinstance(backbone_weights, str) and os.path.exists(backbone_weights) else None
     if backbone_name == "dinov3_vit7b16":
         backbone_model = dinov3_vit7b16(pretrained=pretrained, weights=backbone_weights, check_hash=check_hash)
     elif backbone_name == "dinov3_vitl16":
         backbone_model = dinov3_vitl16(pretrained=pretrained, weights=backbone_weights, check_hash=check_hash)
     else:
         raise AssertionError(f"No pretrained segmentation checkpoint available for {backbone_name}")
+    if backbone_local_path:
+        print(f"[Segmentor] 已加载本地 backbone 权重：{backbone_local_path}")
 
     hidden_dim = 2048 if "hidden_dim" not in kwargs else kwargs["hidden_dim"]
     segmentor = build_segmentation_decoder(
@@ -55,9 +58,17 @@ def _make_dinov3_m2f_segmentor(
             model_filename = f"{backbone_name}_{segmentor_weights_name}_m2f_head-{hash}.pth"
             url = os.path.join(DINOV3_BASE_URL, backbone_name, model_filename)
         else:
-            url = convert_path_or_url_to_url(segmentor_weights)
-        state_dict = torch.hub.load_state_dict_from_url(url, map_location="cpu", check_hash=check_hash)
+            # 使用自定义的分割头权重路径
+            if os.path.exists(segmentor_weights):
+                state_dict = torch.load(segmentor_weights, map_location="cpu")
+                state_dict = state_dict["model"] if "model" in state_dict else state_dict
+                print(f"[Segmentor] 已加载本地分割头权重：{segmentor_weights}")
+            else:
+                url = convert_path_or_url_to_url(segmentor_weights)
+                state_dict = torch.hub.load_state_dict_from_url(url, map_location="cpu", check_hash=check_hash)
         missing_keys, unexpected_keys = segmentor.load_state_dict(state_dict, strict=False)
+
+        # print("[Segmentor] missing_keys:", [k for k in missing_keys if "backbone" not in k])
         assert len([k for k in missing_keys if "backbone" not in k]) == 0
         assert len(unexpected_keys) == 0
 
@@ -75,6 +86,25 @@ def dinov3_vit7b16_ms(
 ):
     return _make_dinov3_m2f_segmentor(
         backbone_name="dinov3_vit7b16",
+        pretrained=pretrained,
+        segmentor_weights=weights,
+        backbone_weights=backbone_weights,
+        check_hash=check_hash,
+        autocast_dtype=autocast_dtype,
+        **kwargs,
+    )
+
+def dinov3_vitl16_ms(
+    *,
+    pretrained: bool = True,
+    weights: SegmentorWeights | str = SegmentorWeights.ADE20K,
+    backbone_weights: BackboneWeights | str = BackboneWeights.LVD1689M,
+    check_hash: bool = False,
+    autocast_dtype: torch.dtype = torch.bfloat16,
+    **kwargs,
+):
+    return _make_dinov3_m2f_segmentor(
+        backbone_name="dinov3_vitl16",
         pretrained=pretrained,
         segmentor_weights=weights,
         backbone_weights=backbone_weights,

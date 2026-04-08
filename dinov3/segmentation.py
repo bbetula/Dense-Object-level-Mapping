@@ -1,4 +1,3 @@
-"from wanglinman, dinov3 segmentation example"
 import sys
 from PIL import Image
 import os
@@ -9,6 +8,7 @@ from torchvision import transforms
 from functools import partial
 from dinov3.eval.segmentation.inference import make_inference
 from hubconf import dinov3_vit7b16_ms
+from hubconf import dinov3_vitl16_ms
 import numpy as np
 import cv2
 import time
@@ -17,15 +17,20 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 REPO_DIR="/data1/user/Dense-Object-level-Mapping/dinov3"
 sys.path.append(REPO_DIR)
+# 是否使用自定义权重路径
+CITYSCAPE_FLAG = True 
+
 # 7B ViT + Mask2Former 头
-HEAD_DIR="checkpoint/dinov3_pretrained/DINOv3 Adapters/dinov3_vit7b16_ade20k_m2f_head-bf307cb1.pth"
-BACKBONE_DIR="checkpoint/dinov3_pretrained/DINOv3 ViT LVD-1689M/dinov3_vit7b16_pretrain_lvd1689m-a955f4ea.pth"
-PALETTE_FILE = os.path.join(REPO_DIR, "yaml", "ADE20k.yaml")
+# HEAD_DIR="checkpoint/dinov3_pretrained/DINOv3 Adapters/dinov3_vit7b16_ade20k_m2f_head-bf307cb1.pth"
+# BACKBONE_DIR="checkpoint/dinov3_pretrained/DINOv3 ViT LVD-1689M/dinov3_vit7b16_pretrain_lvd1689m-a955f4ea.pth"
+# PALETTE_FILE = os.path.join(REPO_DIR, "yaml", "ADE20k.yaml")
+# CHANNNEILS = 150
 
 # Large ViT + Mask2Former 头
-# HEAD_DIR
-# BACKBONE_DIR="checkpoint/dinov3_pretrained/DINOv3 ViT LVD-1689M/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth"
-# PALETTE_FILE = os.path.join(REPO_DIR, "yaml", "cityscape.yaml")
+HEAD_DIR = "/data1/user/Dense-Object-level-Mapping/dinov3-train/output/best_cityscapes_dino_head.pth"
+BACKBONE_DIR="checkpoint/dinov3_pretrained/DINOv3 ViT LVD-1689M/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth"
+PALETTE_FILE = os.path.join(REPO_DIR, "yaml", "cityscape.yaml")
+CHANNNEILS = 19
 
 image_path="/data1/user/data/cityscape/leftImg8bit/test/berlin/berlin_000000_000019_leftImg8bit.png"
 output_path="output/"
@@ -51,7 +56,10 @@ def colorize_mask(mask: np.ndarray, palette: np.ndarray) -> np.ndarray:
     return palette[indices]
 
 # segmentor = torch.hub.load(REPO_DIR, 'dinov3_vit7b16_ms', source="local", weights=HEAD_DIR, backbone_weights=BACKBONE_DIR)
-segmentor = dinov3_vit7b16_ms(pretrained=True, weights=HEAD_DIR, backbone_weights=BACKBONE_DIR, check_hash=False)
+if CITYSCAPE_FLAG:
+    segmentor = dinov3_vitl16_ms(pretrained=True, weights=HEAD_DIR, backbone_weights=BACKBONE_DIR, check_hash=False)
+else:
+    segmentor = dinov3_vit7b16_ms(pretrained=True, weights=HEAD_DIR, backbone_weights=BACKBONE_DIR, check_hash=False)
 
 img_size = 1024 #896
 transform = make_transform(img_size)
@@ -69,7 +77,7 @@ with torch.inference_mode():
             inference_mode="whole", # slide: 分块处理; whole: 整图处理
             decoder_head_type="m2f", # Mask2Former
             rescale_to=(img.size[-1], img.size[-2]),
-            n_output_channels=150, # ADE20K 150类别
+            n_output_channels=CHANNNEILS, # ADE20K 150类别
             crop_size=(img_size, img_size), # 模型一次处理的图像块尺寸
             stride=(img_size, img_size),
             output_activation=partial(torch.nn.functional.softmax, dim=1),

@@ -1,4 +1,15 @@
-# ADE20K 类别颜色配置文件
+# 配置常量
+COLOR_TOLERANCE = 7  # 每个RGB通道允许的误差 ADE20K:7
+DEFAULT_MAP_PATHS = {
+    "indoor1": "/data1/user/data/fastlivo_output_indoor_107/lidar/res",
+    "outdoor1": "/data1/user/data/fastlivo_output_outdoor_1s/lidar/res",
+    "outdoor2": "/data1/user/data/fastlivo_output_qs2_03.17/lidar/res",
+}
+DATA_CHOICE = "outdoor2"
+LABEL_CHOICE = "ADE20K"  # "ADE20K" or "SCANNET_NYU40"
+DEFAULT_MAP_PATH = DEFAULT_MAP_PATHS[DATA_CHOICE]
+
+# 多类别颜色配置文件
 # 格式：{类别名: RGB颜色列表}
 ADE20K_CATEGORIES = {
     "wall": [120, 120, 120],
@@ -153,11 +164,51 @@ ADE20K_CATEGORIES = {
     "flag": [92, 0, 255]
 }
 
-# 配置常量
-COLOR_TOLERANCE = 3  # 每个RGB通道允许的误差
-MAX_IMG_COUNT = 2 * 10**6  # 最大处理文件数
-DEFAULT_PCD_PATHS = {
-    "indoor": "/home/czj/datasets/fastlivo_output_indoor_107/lidar/seg",
-    "outdoor": "/home/czj/datasets/fastlivo_output_outdoor_1s/lidar/seg",
+# ScanNet NYU40 类别颜色配置（labels.ply 色盘）
+# nyu40id -> 类别名: RGB颜色
+# ignore -> 室内后续处理忽略的类别
+SCANNET_NYU40_CATEGORIES = {
+    "unlabeled": [0, 0, 0],            # 0 ignore
+    "wall": [174, 199, 232],           # 1 ignore
+    "floor": [152, 223, 138],          # 2 ignore
+    "cabinet": [31, 119, 180],         # 3
+    "bed": [255, 187, 120],            # 4
+    "chair": [188, 189, 34],           # 5
+    "sofa": [140, 86, 75],             # 6
+    "table": [255, 152, 150],          # 7
+    "door": [214, 39, 40],             # 8
+    "window": [197, 176, 213],         # 9
+    "bookshelf": [148, 103, 189],      # 10
+    "picture": [196, 156, 148],        # 11
+    "counter": [23, 190, 207],         # 12
+    "blinds": [178, 76, 76],           # 13
+    "desk": [247, 182, 210],           # 14
+    "shelves": [66, 188, 102],         # 15
+    "curtain": [219, 219, 141],        # 16
+    "dresser": [140, 57, 197],         # 17
+    "pillow": [202, 185, 52],          # 18
+    "mirror": [51, 176, 203],          # 19
+    "floor mat": [200, 54, 131],       # 20
+    "clothes": [92, 193, 61],          # 21
+    "ceiling": [78, 71, 183],          # 22 ignore
+    "books": [172, 114, 82],           # 23
+    "refrigerator": [255, 127, 14],    # 24
+    "television": [91, 163, 138],      # 25
+    "paper": [153, 98, 156],           # 26
+    "towel": [140, 153, 101],          # 27
+    "shower curtain": [158, 218, 229], # 28
+    "box": [100, 125, 154],            # 29
+    "whiteboard": [178, 127, 135],     # 30
+    "person": [120, 185, 128],         # 31
+    "night stand": [146, 111, 194],    # 32
+    "toilet": [44, 160, 44],           # 33
+    "sink": [112, 128, 144],           # 34
+    "lamp": [96, 207, 209],            # 35
+    "bathtub": [227, 119, 194],        # 36
+    "bag": [213, 92, 176],             # 37
+    "otherstructure": [94, 106, 211],  # 38
+    "otherfurniture": [82, 84, 163],   # 39
+    "otherprop": [100, 85, 144],       # 40
 }
-DEFAULT_PCD_PATH = DEFAULT_PCD_PATHS["indoor"]
+
+

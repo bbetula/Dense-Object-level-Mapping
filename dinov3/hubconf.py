@@ -24,3 +24,6 @@ from dinov3.hub.segmentors import dinov3_vit7b16_ms
 from dinov3.hub.depthers import dinov3_vit7b16_dd
 
 dependencies = ["torch", "numpy"]
+
+# add more imports here as you add more models
+from dinov3.hub.segmentors_cityscape import dinov3_vitl16_ms

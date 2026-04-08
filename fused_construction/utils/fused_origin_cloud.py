@@ -18,10 +18,10 @@ import numpy as np
 import open3d as o3d
 
 # 配置常量
-# DEFAULT_PCD_DIR = "/home/czj/datasets/fastlivo_output_indoor_107/lidar"
-DEFAULT_PCD_DIR = "/home/czj/datasets/fastlivo_output_outdoor_1s/lidar"
+# DEFAULT_PCD_DIR = "/data1/user/data/fastlivo_output_outdoor_1s/lidar"
+DEFAULT_PCD_DIR = "/data1/user/data/fastlivo_output_indoor_107/lidar"
+OUTPUT_PATH_DIR = "results"
 DEFAULT_OUTPUT_FILENAME = "all_original.pcd"
-
 
 def get_sorted_pcd_files(pcd_dir):
     """获取按时间戳/文件名排序的PCD文件列表"""
@@ -120,8 +120,8 @@ def main():
     # 确定输出路径（显式展示）
     out_path = args.out
     if out_path is None:
-        parent = os.path.dirname(pcd_dir)
-        out_path = os.path.join(parent, DEFAULT_OUTPUT_FILENAME)
+        dataset_name = os.path.basename(os.path.dirname(os.path.normpath(pcd_dir))) or "default"
+        out_path = os.path.join(OUTPUT_PATH_DIR, dataset_name, DEFAULT_OUTPUT_FILENAME)
     
     # 显式打印输入输出路径
     print(f"输入路径：{pcd_dir}")

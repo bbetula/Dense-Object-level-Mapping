@@ -1,0 +1,12 @@
+name: dom
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy
+  - open3d
+  - scipy
+  - opencv
+  - pyyaml
+  - pip

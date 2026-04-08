@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>ScanNet NYU40 Color Card</title>
+<style>
+  body { font-family: monospace; background: #f5f5f5; padding: 20px; }
+  h1 { font-size: 18px; margin-bottom: 16px; }
+  .grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+  .item { display: flex; align-items: center; background: #fff; border-radius: 4px; padding: 6px 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+  .swatch { width: 36px; height: 36px; border-radius: 3px; flex-shrink: 0; border: 1px solid rgba(0,0,0,0.1); }
+  .info { margin-left: 8px; }
+  .id { font-size: 10px; color: #999; }
+  .name { font-size: 12px; font-weight: bold; color: #333; }
+  .rgb { font-size: 10px; color: #666; }
+  input[type=text] { width: 200px; padding: 6px 10px; margin-bottom: 14px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>ScanNet NYU40 Category Color Card</h1>
+<input type="text" id="search" placeholder="搜索类别名..." oninput="filterCards()">
+<div class="grid" id="grid"></div>
+<script>
+const categories = [
+  { id:  0, name: "unlabeled",       zh: "未标注",     rgb: [0,   0,   0  ] },
+  { id:  1, name: "wall",            zh: "墙",         rgb: [174, 199, 232] },
+  { id:  2, name: "floor",           zh: "地板",       rgb: [152, 223, 138] },
+  { id:  3, name: "cabinet",         zh: "橱柜",       rgb: [31,  119, 180] },
+  { id:  4, name: "bed",             zh: "床",         rgb: [255, 187, 120] },
+  { id:  5, name: "chair",           zh: "椅子",       rgb: [188, 189, 34 ] },
+  { id:  6, name: "sofa",            zh: "沙发",       rgb: [140, 86,  75 ] },
+  { id:  7, name: "table",           zh: "桌子",       rgb: [255, 152, 150] },
+  { id:  8, name: "door",            zh: "门",         rgb: [214, 39,  40 ] },
+  { id:  9, name: "window",          zh: "窗户",       rgb: [197, 176, 213] },
+  { id: 10, name: "bookshelf",       zh: "书架",       rgb: [148, 103, 189] },
+  { id: 11, name: "picture",         zh: "图画",       rgb: [196, 156, 148] },
+  { id: 12, name: "counter",         zh: "台面",       rgb: [23,  190, 207] },
+  { id: 13, name: "blinds",          zh: "百叶窗",     rgb: [178, 76,  76 ] },
+  { id: 14, name: "desk",            zh: "书桌",       rgb: [247, 182, 210] },
+  { id: 15, name: "shelves",         zh: "搁架",       rgb: [66,  188, 102] },
+  { id: 16, name: "curtain",         zh: "窗帘",       rgb: [219, 219, 141] },
+  { id: 17, name: "dresser",         zh: "梳妆台",     rgb: [140, 57,  197] },
+  { id: 18, name: "pillow",          zh: "枕头",       rgb: [202, 185, 52 ] },
+  { id: 19, name: "mirror",          zh: "镜子",       rgb: [51,  176, 203] },
+  { id: 20, name: "floor mat",       zh: "地垫",       rgb: [200, 54,  131] },
+  { id: 21, name: "clothes",         zh: "衣物",       rgb: [92,  193, 61 ] },
+  { id: 22, name: "ceiling",         zh: "天花板",     rgb: [78,  71,  183] },
+  { id: 23, name: "books",           zh: "书籍",       rgb: [172, 114, 82 ] },
+  { id: 24, name: "refrigerator",    zh: "冰箱",       rgb: [255, 127, 14 ] },
+  { id: 25, name: "television",      zh: "电视",       rgb: [91,  163, 138] },
+  { id: 26, name: "paper",           zh: "纸张",       rgb: [153, 98,  156] },
+  { id: 27, name: "towel",           zh: "毛巾",       rgb: [140, 153, 101] },
+  { id: 28, name: "shower curtain",  zh: "浴帘",       rgb: [158, 218, 229] },
+  { id: 29, name: "box",             zh: "箱子",       rgb: [100, 125, 154] },
+  { id: 30, name: "whiteboard",      zh: "白板",       rgb: [178, 127, 135] },
+  { id: 31, name: "person",          zh: "人",         rgb: [120, 185, 128] },
+  { id: 32, name: "night stand",     zh: "床头柜",     rgb: [146, 111, 194] },
+  { id: 33, name: "toilet",          zh: "马桶",       rgb: [44,  160, 44 ] },
+  { id: 34, name: "sink",            zh: "水槽",       rgb: [112, 128, 144] },
+  { id: 35, name: "lamp",            zh: "灯",         rgb: [96,  207, 209] },
+  { id: 36, name: "bathtub",         zh: "浴缸",       rgb: [227, 119, 194] },
+  { id: 37, name: "bag",             zh: "包",         rgb: [213, 92,  176] },
+  { id: 38, name: "otherstructure",  zh: "其他结构",   rgb: [94,  106, 211] },
+  { id: 39, name: "otherfurniture",  zh: "其他家具",   rgb: [82,  84,  163] },
+  { id: 40, name: "otherprop",       zh: "其他物品",   rgb: [100, 85,  144] },
+];
+
+function toHex(rgb) {
+  return '#' + rgb.map(v => v.toString(16).padStart(2,'0')).join('');
+}
+
+function renderCards(list) {
+  const grid = document.getElementById('grid');
+  grid.innerHTML = list.map(c => `
+    <div class="item">
+      <div class="swatch" style="background:rgb(${c.rgb.join(',')})"></div>
+      <div class="info">
+        <div class="id">#${c.id}</div>
+        <div class="name">${c.name}（${c.zh}）</div>
+        <div class="rgb">${toHex(c.rgb)}&nbsp;&nbsp;${c.rgb.join(', ')}</div>
+      </div>
+    </div>`).join('');
+}
+
+function filterCards() {
+  const q = document.getElementById('search').value.toLowerCase();
+  renderCards(categories.filter(c => c.name.includes(q) || String(c.id).includes(q)));
+}
+
+renderCards(categories);
+</script>
+</body>
+</html>

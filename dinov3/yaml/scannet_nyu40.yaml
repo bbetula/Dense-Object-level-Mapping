@@ -1,0 +1,99 @@
+# ScanNet NYU40 数据集配置文件
+# ScanNet 使用 NYU40 标签体系，共 40 个语义类别 + 1 个 unlabeled (0)
+# label 图是 uint8，值为 nyu40id (0-40)
+
+dataset_name: ScanNet_NYU40
+num_classes: 41  # 包括 unlabeled (id=0)
+
+# 类别列表 (按 nyu40id 排列, 0-40)
+classes:
+  - unlabeled         # 0
+  - wall              # 1
+  - floor             # 2
+  - cabinet           # 3
+  - bed               # 4
+  - chair             # 5
+  - sofa              # 6
+  - table             # 7
+  - door              # 8
+  - window            # 9
+  - bookshelf         # 10
+  - picture           # 11
+  - counter           # 12
+  - blinds            # 13
+  - desk              # 14
+  - shelves           # 15
+  - curtain           # 16
+  - dresser           # 17
+  - pillow            # 18
+  - mirror            # 19
+  - floor mat         # 20
+  - clothes           # 21
+  - ceiling           # 22
+  - books             # 23
+  - refrigerator      # 24
+  - television        # 25
+  - paper             # 26
+  - towel             # 27
+  - shower curtain    # 28
+  - box               # 29
+  - whiteboard        # 30
+  - person            # 31
+  - night stand       # 32
+  - toilet            # 33
+  - sink              # 34
+  - lamp              # 35
+  - bathtub           # 36
+  - bag               # 37
+  - otherstructure    # 38
+  - otherfurniture    # 39
+  - otherprop         # 40
+
+# 调色板 (每个类别的 RGB 颜色值, 与 ScanNet labels.ply 一致)
+palette:
+  - [0, 0, 0]           # unlabeled
+  - [174, 199, 232]     # wall
+  - [152, 223, 138]     # floor
+  - [31, 119, 180]      # cabinet
+  - [255, 187, 120]     # bed
+  - [188, 189, 34]      # chair
+  - [140, 86, 75]       # sofa
+  - [255, 152, 150]     # table
+  - [214, 39, 40]       # door
+  - [197, 176, 213]     # window
+  - [148, 103, 189]     # bookshelf
+  - [196, 156, 148]     # picture
+  - [23, 190, 207]      # counter
+  - [178, 76, 76]       # blinds
+  - [247, 182, 210]     # desk
+  - [66, 188, 102]      # shelves
+  - [219, 219, 141]     # curtain
+  - [140, 57, 197]      # dresser
+  - [202, 185, 52]      # pillow
+  - [51, 176, 203]      # mirror
+  - [200, 54, 131]      # floor mat
+  - [92, 193, 61]       # clothes
+  - [78, 71, 183]       # ceiling
+  - [172, 114, 82]      # books
+  - [255, 127, 14]      # refrigerator
+  - [91, 163, 138]      # television
+  - [153, 98, 156]      # paper
+  - [140, 153, 101]     # towel
+  - [158, 218, 229]     # shower curtain
+  - [100, 125, 154]     # box
+  - [178, 127, 135]     # whiteboard
+  - [120, 185, 128]     # person
+  - [146, 111, 194]     # night stand
+  - [44, 160, 44]       # toilet
+  - [112, 128, 144]     # sink
+  - [96, 207, 209]      # lamp
+  - [227, 119, 194]     # bathtub
+  - [213, 92, 176]      # bag
+  - [94, 106, 211]      # otherstructure
+  - [82, 84, 163]       # otherfurniture
+  - [100, 85, 144]      # otherprop
+
+# 数据配置
+reduce_zero_label: false  # ScanNet label 0 = unlabeled, 不需要 reduce
+img_suffix: '.jpg'
+seg_map_suffix: '.png'

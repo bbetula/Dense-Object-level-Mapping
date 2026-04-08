@@ -1,0 +1,10 @@
+指定设备
+torch.cuda.set_device(device_id)
+
+监控GPU使用情况
+watch -n 1 nvidia-smi
+
+设置显示
+echo export DISPLAY=\"localhost:13.0\" >> ~/.bashrc
+
+

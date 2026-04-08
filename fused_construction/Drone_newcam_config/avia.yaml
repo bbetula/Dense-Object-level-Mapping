@@ -1,0 +1,123 @@
+common:
+  img_topic: "/left_camera/image"
+  lid_topic: "/livox/lidar"
+  imu_topic: "/livox/imu"
+  img_en: 1
+  lidar_en: 1
+  ros_driver_bug_fix: false
+
+extrin_calib:
+  extrinsic_T: [0.04165, 0.02326, -0.0284]
+  extrinsic_R: [1, 0, 0, 0, 1, 0, 0, 0, 1]
+
+
+# 原始pinhole标定
+  # Rcl: [-0.0027006, -0.999788, -0.0204122,
+  #       -0.00142822, 0.0204161, -0.999791, 
+  #       0.999995, -0.00267088, -0.00148305]
+
+  # Pcl: [0.00357382, 0.0430083, -0.013044]
+ 
+# 新pinhole标定 730
+  # Rcl: [-0.00188815, -0.99979, -0.0203953,
+  #       -0.00755513, 0.020409, -0.999763, 
+  #       0.99997, -0.00173362, -0.00759208]
+
+  # Pcl: [0.00506618, 0.0430355, 0.00253161]
+
+
+# 新pinhole标定 11.12 粗对齐，用这个精度高
+  # Rcl: [0.00106334, -0.999982, -0.00591378,
+  #       -0.00417265, 0.00590929, -0.999974, 
+  #       0.999991, 0.00108799, -0.00416629]
+
+  # Pcl: [3.92573e-05, 0.0579434, -0.0174083]
+
+#11.12 精对齐
+  # Rcl: [0.000567970811, -0.999982655097, -0.005862330176,
+  #       -0.006114738364, 0.005858748590, -0.999964141877, 
+  #       0.999981143514, 0.000603797060, 0.006111304706]
+
+  # Pcl: [0.00514049, 0.06883812, -0.01076735]
+
+#26.3.20 新相机
+  Rcl: [-0.00368394, -0.999979, 0.00527303,
+        0.0269585, -0.00537046, -0.999622, 
+        0.99963, -0.0035404, 0.0269777]
+
+  Pcl: [-0.0020012, 0.0393529, 0.232285]
+
+
+
+
+time_offset: 
+  imu_time_offset: 0.0
+  img_time_offset:  0.11     #ori0.17、outside0.11、
+  exposure_time_init: 0.0
+
+preprocess:
+  point_filter_num: 1
+  filter_size_surf: 0.1
+  lidar_type: 1 # Livox Avia LiDAR
+  scan_line: 6
+  blind: 0.8
+
+vio:
+  max_iterations: 5
+  outlier_threshold: 1000 # 78 100 156 #100 200 500 700 infinite
+  img_point_cov: 1000 # 100 1000 
+  patch_size: 8
+  patch_pyrimid_level: 4
+  normal_en: true
+  raycast_en: false
+  inverse_composition_en: false
+  exposure_estimate_en: true
+  inv_expo_cov: 0.1
+
+imu:
+  imu_en: true
+  imu_int_frame: 30
+  acc_cov: 0.5 # 0.2
+  gyr_cov: 0.3 # 0.5
+  b_acc_cov: 0.0001 # 0.1
+  b_gyr_cov: 0.0001 # 0.1
+
+lio:
+  max_iterations: 5
+  dept_err: 0.02
+  beam_err: 0.05
+  min_eigen_value: 0.0025 # 0.005
+  voxel_size: 0.5
+  max_layer: 2
+  max_points_num: 50
+  layer_init_num: [5, 5, 5, 5, 5]
+
+local_map:  
+  map_sliding_en: false
+  half_map_size: 100000
+  sliding_thresh: 8
+
+uav:
+  imu_rate_odom: false
+  gravity_align_en: false
+
+publish:
+  dense_map_en: true
+  pub_effect_point_en: false 
+  pub_plane_en: false
+  pub_scan_num: 1
+  plot_tracked_points: false
+  blind_rgb_points: 0.0
+
+evo:
+  seq_name: "CBD_Building_01"
+  pose_output_en: false
+
+pcd_save:
+  pcd_save_en: true
+  colmap_output_en: false # need to set interval = -1
+  if_save_image_and_lidar: true # need to set interval = -1
+  filter_size_pcd: 0.10
+  interval: -1
+  # how many LiDAR frames saved in each pcd file;
+  # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too much frames.
