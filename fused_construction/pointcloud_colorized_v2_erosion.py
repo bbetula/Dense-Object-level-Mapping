@@ -32,6 +32,11 @@ class Config:
     CONFIG_TXT_PATH = os.path.join(DEFAULT_YAML_PATH, "config.txt")
     RES_SUBDIR = "res"
 
+    EROSION_CLASS_NAMES = ("tree", "person")
+    EROSION_ITERATIONS = 7 #2
+    EROSION_KERNEL_SIZE = 2*EROSION_ITERATIONS+1 #5
+
+
     MIN_VOTES_PER_POINT = 5       # 点被至少观测多少次才赋类别
     LABEL_CACHE_SIZE = 32         # 滑动缓存标签图
     PROGRESS_INTERVAL = 50        # 每隔多少帧打印一次耗时
@@ -187,23 +192,57 @@ def save_camera_params_to_txt(ext_params: Dict, inter_params: Dict):
     print(f"内参/外参已保存到: {Config.CONFIG_TXT_PATH}")
 
 
-def load_palette_and_lookup() -> Tuple[np.ndarray, Dict[int, int]]:
+def load_palette_and_lookup() -> Tuple[np.ndarray, Dict[int, int], Dict[str, int]]:
     """
     加载色盘并建立 RGB->类别ID 映射表
 
     Returns:
-        Tuple[np.ndarray, Dict[int, int]]: 色盘 (C,3) RGB, 映射表(key=24bit RGB整数, value=class_id)
+        Tuple[np.ndarray, Dict[int, int], Dict[str, int]]: 色盘 (C,3) RGB, 映射表(key=24bit RGB整数, value=class_id), 类别名到ID映射
     """
     palette_yaml = load_yaml_config(Config.PALETTE_YAML_PATH)
     palette = np.array(palette_yaml.get("palette", []), dtype=np.uint8)
+    classes = palette_yaml.get("classes", [])
     if palette.ndim != 2 or palette.shape[1] != 3:
         raise ValueError(f"色盘格式错误: {Config.PALETTE_YAML_PATH}")
+    if len(classes) != len(palette):
+        raise ValueError(f"类别列表与色盘长度不一致: {Config.PALETTE_YAML_PATH}")
 
     color_to_class = {}
     for class_id, rgb in enumerate(palette):
         key = (int(rgb[0]) << 16) | (int(rgb[1]) << 8) | int(rgb[2])
         color_to_class[key] = class_id
-    return palette, color_to_class
+    class_name_to_id = {str(name): idx for idx, name in enumerate(classes)}
+    return palette, color_to_class, class_name_to_id
+
+
+def erode_target_classes(
+    label_map: np.ndarray,
+    target_class_ids: Dict[str, int],
+) -> np.ndarray:
+    """
+    对指定类别做2D腐蚀，收缩边界以减少 tree/person 外溢到周围背景。
+    被腐蚀掉的边缘像素会被置为 -1，使其不参与后续 3D 投票。
+    """
+    if not target_class_ids:
+        return label_map
+
+    kernel_size = Config.EROSION_KERNEL_SIZE
+    iterations = Config.EROSION_ITERATIONS
+    if kernel_size <= 1 or iterations <= 0:
+        return label_map
+
+    kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
+    eroded_map = label_map.copy()
+
+    for class_name, class_id in target_class_ids.items():
+        class_mask = (label_map == class_id).astype(np.uint8)
+        if not np.any(class_mask):
+            continue
+        eroded_mask = cv2.erode(class_mask, kernel, iterations=iterations)
+        removed_mask = (class_mask == 1) & (eroded_mask == 0)
+        eroded_map[removed_mask] = -1
+
+    return eroded_map
 
 
 def load_pose_files(img_path: str) -> Tuple[List[str], List[int]]:
@@ -505,6 +544,7 @@ def load_label_map_for_pose(
     pose_timestamp: int,
     img_path: str,
     color_to_class: Dict[int, int],
+    erosion_class_ids: Dict[str, int],
     label_cache: "OrderedDict[int, np.ndarray]",
     expected_image_size: Tuple[int, int],
 ) -> Optional[np.ndarray]:
@@ -543,6 +583,8 @@ def load_label_map_for_pose(
             f"请先确保 mask_id 已正确映回相机分辨率。"
         )
 
+    label_map = erode_target_classes(label_map, erosion_class_ids)
+
     label_cache[pose_timestamp] = label_map
     if len(label_cache) > Config.LABEL_CACHE_SIZE:
         label_cache.popitem(last=False)
@@ -556,6 +598,7 @@ def color_point_cloud_with_majority_vote(
     inter_params: Dict,
     palette_rgb: np.ndarray,
     color_to_class: Dict[int, int],
+    erosion_class_ids: Dict[str, int],
     label_cache: "OrderedDict[int, np.ndarray]",
 ) -> Optional[o3d.geometry.PointCloud]:
     """
@@ -595,6 +638,7 @@ def color_point_cloud_with_majority_vote(
             pose_timestamp,
             img_path,
             color_to_class,
+            erosion_class_ids,
             label_cache,
             expected_image_size,
         )
@@ -663,10 +707,17 @@ def main(global_pcd_path: str, img_path: str) -> None:
     # 加载相机参数与类别色盘
     try:
         ext_params, inter_params = load_camera_params()
-        palette_rgb, color_to_class = load_palette_and_lookup()
+        palette_rgb, color_to_class, class_name_to_id = load_palette_and_lookup()
     except Exception as e:
         print(f"错误: 加载必要配置失败: {e}")
         return
+
+    erosion_class_ids = {
+        name: class_name_to_id[name]
+        for name in Config.EROSION_CLASS_NAMES
+        if name in class_name_to_id
+    }
+    print(f"腐蚀类别: {sorted(erosion_class_ids.keys())}, kernel={Config.EROSION_KERNEL_SIZE}, iterations={Config.EROSION_ITERATIONS}")
 
     # 加载pose
     sorted_pose_files, _ = load_pose_files(img_path)
@@ -696,6 +747,7 @@ def main(global_pcd_path: str, img_path: str) -> None:
             inter_params=inter_params,
             palette_rgb=palette_rgb,
             color_to_class=color_to_class,
+            erosion_class_ids=erosion_class_ids,
             label_cache=label_cache,
         )
     except ValueError as e:
@@ -706,7 +758,7 @@ def main(global_pcd_path: str, img_path: str) -> None:
         return
 
     pcd_stem = os.path.splitext(os.path.basename(global_pcd_path))[0]
-    output_file = os.path.join(res_dir, f"{pcd_stem}_color.pcd")
+    output_file = os.path.join(res_dir, f"{pcd_stem}_color_erosion_{Config.EROSION_KERNEL_SIZE}_{Config.EROSION_ITERATIONS}.pcd")
     o3d.io.write_point_cloud(output_file, colored_pcd)
     print(f"\n成功保存彩色全局点云: {output_file}")
 

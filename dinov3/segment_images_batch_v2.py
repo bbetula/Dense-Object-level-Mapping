@@ -1,6 +1,11 @@
 import sys
-REPO_DIR = "/data1/user/Dense-Object-level-Mapping/dinov3"
-sys.path.append(REPO_DIR)
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent
+for path in (str(REPO_ROOT), str(SCRIPT_DIR)):
+    if path not in sys.path:
+        sys.path.insert(0, path)
 
 from PIL import Image
 import torch
@@ -13,10 +18,11 @@ import numpy as np
 import yaml
 from hubconf import dinov3_vit7b16_ms
 
+# 导入路径
+from fused_construction.class_statics_config import IMAGES_DIR
 os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
 SAVE_MASK_ID = True  # 保存单通道类别ID图（_mask_id.png），供 3D 多数投票使用
-
 
 def make_transform(resize_size=768):
     return v2.Compose([
@@ -38,7 +44,7 @@ def colorize_mask(mask, palette):
     return palette[indices]
 
 
-PALETTE_FILE = os.path.join(REPO_DIR, "yaml", "ADE20k.yaml")
+PALETTE_FILE = os.path.join(SCRIPT_DIR, "yaml", "ADE20k.yaml")
 palette_array = load_palette(PALETTE_FILE)
 
 # ── model ──────────────────────────────────────────────────────────
@@ -48,7 +54,6 @@ segmentor = dinov3_vit7b16_ms(pretrained=True, weights=HEAD_DIR, backbone_weight
 segmentor.to("cuda").eval()
 
 # ── dataset ────────────────────────────────────────────────────────
-IMAGES_DIR = "/data1/user/data/fastlivo_output_qs2_03.17/image"
 all_files = sorted([f for f in os.listdir(IMAGES_DIR) if f.lower().endswith(".png")])
 
 SINGLE_IMAGE_TEST = False

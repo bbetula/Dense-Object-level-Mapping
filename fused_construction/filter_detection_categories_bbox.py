@@ -1,42 +1,96 @@
 from pathlib import Path
 import shutil
-from class_statics_config import SCANNET_NYU40_CATEGORIES
+from class_statics_config import SCANNET_NYU40_CATEGORIES, ADE20K_CATEGORIES, LABEL_CHOICE, OUTSCENE
+from generate_n_pcd_bbox import OUTPUT_BASE_DIR as GENERATED_COLOR_SEPARATED_DIR
 
 # ===== 配置区 =====
-INPUT_BASE_DIR = Path("/data1/data/scannet/output_bbox/color_separated_scenes")  
-# INPUT_BASE_DIR = Path("/data1/data/scannet/output_single_bbox/color_separated_scenes")  
-OUTPUT_BASE_DIR = INPUT_BASE_DIR.parent / "detection_targets"               # 筛选结果根目录
+INPUT_BASE_DIR = GENERATED_COLOR_SEPARATED_DIR
+OUTPUT_BASE_DIR = INPUT_BASE_DIR.parent / "detection_targets"
+if LABEL_CHOICE == "SCANNET_NYU40":
 
-# 类别筛选模式：
-#   "exclude"  — 从 SCANNET_NYU40_CATEGORIES 中排除指定类别，保留其余所有类别
-#   "include"  — 只保留手动指定的类别
-CATEGORY_MODE = "exclude"
+    CATEGORIES = SCANNET_NYU40_CATEGORIES
 
-# CATEGORY_MODE = "exclude" 时：从 SCANNET_NYU40_CATEGORIES 中去掉这些类别
-EXCLUDE_CATEGORIES = {
-    "wall", "floor", "ceiling", "unlabeled"
-}
+    CATEGORY_MODE = "exclude"
 
-# CATEGORY_MODE = "include" 时：只保留这些类别
-INCLUDE_CATEGORIES = {
-    "chair", "sofa", "table", "desk", "bed", "cabinet", "bookshelf", "television", "lamp"
-}
+    EXCLUDE_CATEGORIES = {
+        "wall", "floor", "ceiling", "unlabeled"
+    }
 
-# 室外场景快捷开关：True 时强制使用室外类别（覆盖上面的设置）
-OUTSCENE = False
-OUTSCENE_CATEGORIES = {
-    "car", "truck", "bus",
-    "person", "pedestrian",
-    "rider", "cyclist", "bicycle",
-}
+    INCLUDE_CATEGORIES = {
+        "chair", "sofa", "table", "desk", "bed", "cabinet", "bookshelf", "television", "lamp"
+    }
+
+    OUTSCENE_CATEGORIES = {
+        "car", "truck", "bus",
+        "person", "pedestrian",
+        "rider", "cyclist", "bicycle",
+    }
+
+
+elif LABEL_CHOICE == "ADE20K":
+
+    CATEGORIES = ADE20K_CATEGORIES
+
+    EXCLUDE_CATEGORIES = {
+        "wall", "floor", "ceiling", "fence"
+    }
+
+    # ── 室内场景：只检测独立物体，排除墙/天花板附着结构 ──
+    INSCENE_CATEGORIES = {
+        # 座椅
+        "chair", "swivel chair", "armchair", "seat", "stool", "bench",
+        "sofa", "ottoman", "cushion",
+        # 桌面
+        "table", "coffee table", "pool table", "counter", "countertop",
+        "desk",
+        # 床/寝具
+        "bed", "pillow", "blanket", "cradle",
+        # 柜类
+        "cabinet", "chest of drawers", "wardrobe", "bookcase",
+        "shelf", "buffet",
+        # 电器/屏幕
+        "television receiver", "monitor", "screen", "crt screen", "computer",
+        "refrigerator", "oven", "stove", "microwave", "dishwasher",
+        "washer",
+        # 卫浴
+        "sink", "bathtub", "toilet", "shower",
+        # 照明（独立灯具）
+        "lamp", "chandelier",
+        # 镜/装饰
+        "mirror", "painting", "clock",
+        # 小型物品
+        "box", "bottle", "pot", "vase", "basket", "bag", "book",
+        "fan", "flower", "plaything", "towel", "tray",
+        # 人
+        "person",
+        # 植物
+        "plant", "tree",
+    }
+
+    # ── 室外场景：城市/街道环境下的独立物体 ──
+    OUTSCENE_CATEGORIES = {
+        # 交通工具
+        "car", "van", "truck", "bus",
+        "bicycle", "minibike",
+        "boat", "ship", "airplane",
+        # 人/动物
+        "person", "animal",
+        # 杆状/灯具
+        "pole", "streetlight", "traffic light", "light",
+        # 标识/指示
+        "signboard", "flag",
+        # 城市家具
+        "bench", "booth", "ashcan",
+        # 独立物体
+        "box", "barrel", "basket", "bottle", "pot", "vase",
+        "sculpture", "fountain", "tent",
+    }
 # ==================================
 
 def _build_target_categories() -> set:
     if OUTSCENE:
         return OUTSCENE_CATEGORIES
-    if CATEGORY_MODE == "exclude":
-        return {k for k in SCANNET_NYU40_CATEGORIES if k not in EXCLUDE_CATEGORIES}
-    return INCLUDE_CATEGORIES
+    return INSCENE_CATEGORIES
 
 TARGET_CATEGORIES = _build_target_categories()
 

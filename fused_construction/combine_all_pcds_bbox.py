@@ -2,12 +2,30 @@ from pathlib import Path
 from typing import Tuple
 
 import numpy as np
-from hdbscan_single_label_bbox import write_ply_with_faces
+import open3d as o3d
+from hdbscan_single_label_bbox_config import OUTPUT_BASE_DIR as HDBSCAN_OUTPUT_BASE_DIR, write_ply_with_faces
+from class_statics_config import LABEL_CHOICE, OUTSCENE
+from filter_detection_categories_bbox import is_target_file
+from generate_n_pcd_bbox import OUTPUT_BASE_DIR as GENERATED_COLOR_SEPARATED_DIR
 
 # ===== 配置区 =====
-INPUT_BASE_DIR = Path("/data1/data/scannet/output_bbox/hdbscan_scenes")  
-# INPUT_BASE_DIR = Path("/data1/data/scannet/output_single_bbox/hdbscan_scenes")  
-OUTPUT_DIR = INPUT_BASE_DIR.parent / "combined_scenes"              # 每个场景合并结果输出目录
+INCLUDE_BACKGROUND = True
+
+# 室外模式：仅加载地面参考类别作为灰色底图
+GROUND_REFERENCE_CATEGORIES = {"road", "sidewalk", "path", "earth"}
+GROUND_COLOR = np.array([0.55, 0.55, 0.55])   # 中性灰
+GROUND_VOXEL_SIZE = 0.05                        # 体素降采样尺寸 (m)
+
+if LABEL_CHOICE == "SCANNET_NYU40":
+    INPUT_BASE_DIR = HDBSCAN_OUTPUT_BASE_DIR
+    COLOR_SEPARATED_DIR = GENERATED_COLOR_SEPARATED_DIR
+    OUTPUT_DIR = INPUT_BASE_DIR.parent / "combined_scenes"
+
+elif LABEL_CHOICE == "ADE20K":
+    INPUT_BASE_DIR = HDBSCAN_OUTPUT_BASE_DIR
+    COLOR_SEPARATED_DIR = GENERATED_COLOR_SEPARATED_DIR
+    OUTPUT_DIR = INPUT_BASE_DIR.parent / "combined_scenes_bbox"
+
 FILE_SUFFIX = "_with_bboxes.ply"
 # ==================================
 
@@ -66,10 +84,72 @@ def read_ply_with_faces(path: Path) -> Tuple[np.ndarray, np.ndarray, np.ndarray,
             return vertices, vcolors, np.zeros((0, 3), dtype=np.int32), np.zeros((0, 3), dtype=np.uint8)
 
 
+def load_background_pcds(scene_name: str) -> Tuple[np.ndarray, np.ndarray]:
+    """从 color_separated_scenes 中加载未被 filter_detection_categories 选中的背景点云。"""
+    bg_scene_dir = COLOR_SEPARATED_DIR / scene_name
+    if not bg_scene_dir.is_dir():
+        print(f"  背景目录不存在: {bg_scene_dir}")
+        return np.zeros((0, 3)), np.zeros((0, 3))
+
+    all_pts = []
+    all_cols = []
+    for pcd_path in sorted(bg_scene_dir.glob("*.pcd")):
+        if is_target_file(pcd_path.stem):
+            continue
+        pcd = o3d.io.read_point_cloud(str(pcd_path))
+        if pcd.is_empty():
+            continue
+        pts = np.asarray(pcd.points)
+        cols = np.asarray(pcd.colors) if pcd.has_colors() else np.ones((len(pts), 3)) * 0.5
+        all_pts.append(pts)
+        all_cols.append(cols)
+        print(f"  背景: {pcd_path.name} -> {len(pts)} 点")
+
+    if not all_pts:
+        return np.zeros((0, 3)), np.zeros((0, 3))
+    return np.vstack(all_pts), np.vstack(all_cols)
+
+
+def load_ground_reference_pcds(scene_name: str) -> Tuple[np.ndarray, np.ndarray]:
+    """室外模式：仅加载 road/sidewalk 等地面类别，统一灰色 + 体素降采样。"""
+    bg_scene_dir = COLOR_SEPARATED_DIR / scene_name
+    if not bg_scene_dir.is_dir():
+        print(f"  地面参考目录不存在: {bg_scene_dir}")
+        return np.zeros((0, 3)), np.zeros((0, 3))
+
+    ground_pcds = []
+    for pcd_path in sorted(bg_scene_dir.glob("*.pcd")):
+        stem_lower = pcd_path.stem.lower()
+        if not any(cat in stem_lower for cat in GROUND_REFERENCE_CATEGORIES):
+            continue
+        pcd = o3d.io.read_point_cloud(str(pcd_path))
+        if pcd.is_empty():
+            continue
+        ground_pcds.append((pcd_path.name, pcd))
+        print(f"  地面参考: {pcd_path.name} -> {len(pcd.points)} 点")
+
+    if not ground_pcds:
+        return np.zeros((0, 3)), np.zeros((0, 3))
+
+    merged = o3d.geometry.PointCloud()
+    for _, pcd in ground_pcds:
+        merged += pcd
+
+    raw_count = len(merged.points)
+    if GROUND_VOXEL_SIZE > 0:
+        merged = merged.voxel_down_sample(voxel_size=GROUND_VOXEL_SIZE)
+    ds_count = len(merged.points)
+    print(f"  地面降采样: {raw_count} → {ds_count} 点 (voxel={GROUND_VOXEL_SIZE}m)")
+
+    pts = np.asarray(merged.points)
+    cols = np.tile(GROUND_COLOR, (len(pts), 1))
+    return pts, cols
+
+
 def merge_scene(scene_dir: Path, output_ply: Path) -> None:
     """合并单个场景子文件夹内所有 *_with_bboxes.ply 为一个 PLY 文件。"""
     ply_files = sorted(p for p in scene_dir.glob("*.ply") if p.name.endswith(FILE_SUFFIX))
-    if not ply_files:
+    if not ply_files and not INCLUDE_BACKGROUND:
         print(f"  {scene_dir.name}: 未找到 {FILE_SUFFIX} 文件，跳过。")
         return
 
@@ -79,6 +159,7 @@ def merge_scene(scene_dir: Path, output_ply: Path) -> None:
     all_ecolors = []
     offset = 0
 
+    # 加载聚类结果 PLY
     for ply in ply_files:
         verts, cols, elems, elem_cols = read_ply_with_faces(ply)
         if not len(verts):
@@ -91,6 +172,24 @@ def merge_scene(scene_dir: Path, output_ply: Path) -> None:
             all_ecolors.append(elem_cols)
         offset += len(verts)
         print(f"  加载: {ply.name} -> 顶点 {len(verts)}, 面片/边 {len(elems)}")
+
+    # 加载参考底图
+    if OUTSCENE:
+        ground_pts, ground_cols = load_ground_reference_pcds(scene_dir.name)
+        if len(ground_pts):
+            ground_cols_uint8 = (np.clip(ground_cols, 0, 1) * 255).astype(np.uint8)
+            all_vertices.append(ground_pts)
+            all_vcolors.append(ground_cols_uint8)
+            offset += len(ground_pts)
+            print(f"  地面参考合计: {len(ground_pts)} 点")
+    elif INCLUDE_BACKGROUND:
+        bg_pts, bg_cols = load_background_pcds(scene_dir.name)
+        if len(bg_pts):
+            bg_cols_uint8 = (np.clip(bg_cols, 0, 1) * 255).astype(np.uint8)
+            all_vertices.append(bg_pts)
+            all_vcolors.append(bg_cols_uint8)
+            offset += len(bg_pts)
+            print(f"  背景合计: {len(bg_pts)} 点")
 
     if not all_vertices:
         print(f"  {scene_dir.name}: 无有效数据。")

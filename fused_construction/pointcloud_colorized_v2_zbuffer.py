@@ -32,6 +32,13 @@ class Config:
     CONFIG_TXT_PATH = os.path.join(DEFAULT_YAML_PATH, "config.txt")
     RES_SUBDIR = "res"
 
+    EROSION_CLASS_NAMES = ("tree", "person")
+    EROSION_KERNEL_SIZE = 3
+    EROSION_ITERATIONS = 1
+    ZBUFFER_BASE_TOLERANCE = 0.15
+    ZBUFFER_ZERO_TOLERANCE_CLASS_NAMES = ("tree", "person")
+    ZBUFFER_STRICT_EPS = 1e-6
+
     MIN_VOTES_PER_POINT = 5       # 点被至少观测多少次才赋类别
     LABEL_CACHE_SIZE = 32         # 滑动缓存标签图
     PROGRESS_INTERVAL = 50        # 每隔多少帧打印一次耗时
@@ -187,23 +194,57 @@ def save_camera_params_to_txt(ext_params: Dict, inter_params: Dict):
     print(f"内参/外参已保存到: {Config.CONFIG_TXT_PATH}")
 
 
-def load_palette_and_lookup() -> Tuple[np.ndarray, Dict[int, int]]:
+def load_palette_and_lookup() -> Tuple[np.ndarray, Dict[int, int], Dict[str, int]]:
     """
     加载色盘并建立 RGB->类别ID 映射表
 
     Returns:
-        Tuple[np.ndarray, Dict[int, int]]: 色盘 (C,3) RGB, 映射表(key=24bit RGB整数, value=class_id)
+        Tuple[np.ndarray, Dict[int, int], Dict[str, int]]: 色盘 (C,3) RGB, 映射表(key=24bit RGB整数, value=class_id), 类别名到ID映射
     """
     palette_yaml = load_yaml_config(Config.PALETTE_YAML_PATH)
     palette = np.array(palette_yaml.get("palette", []), dtype=np.uint8)
+    classes = palette_yaml.get("classes", [])
     if palette.ndim != 2 or palette.shape[1] != 3:
         raise ValueError(f"色盘格式错误: {Config.PALETTE_YAML_PATH}")
+    if len(classes) != len(palette):
+        raise ValueError(f"类别列表与色盘长度不一致: {Config.PALETTE_YAML_PATH}")
 
     color_to_class = {}
     for class_id, rgb in enumerate(palette):
         key = (int(rgb[0]) << 16) | (int(rgb[1]) << 8) | int(rgb[2])
         color_to_class[key] = class_id
-    return palette, color_to_class
+    class_name_to_id = {str(name): idx for idx, name in enumerate(classes)}
+    return palette, color_to_class, class_name_to_id
+
+
+def erode_target_classes(
+    label_map: np.ndarray,
+    target_class_ids: Dict[str, int],
+) -> np.ndarray:
+    """
+    对指定类别做2D腐蚀，收缩边界以减少 tree/person 外溢到周围背景。
+    被腐蚀掉的边缘像素会被置为 -1，使其不参与后续 3D 投票。
+    """
+    if not target_class_ids:
+        return label_map
+
+    kernel_size = Config.EROSION_KERNEL_SIZE
+    iterations = Config.EROSION_ITERATIONS
+    if kernel_size <= 1 or iterations <= 0:
+        return label_map
+
+    kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
+    eroded_map = label_map.copy()
+
+    for class_name, class_id in target_class_ids.items():
+        class_mask = (label_map == class_id).astype(np.uint8)
+        if not np.any(class_mask):
+            continue
+        eroded_mask = cv2.erode(class_mask, kernel, iterations=iterations)
+        removed_mask = (class_mask == 1) & (eroded_mask == 0)
+        eroded_map[removed_mask] = -1
+
+    return eroded_map
 
 
 def load_pose_files(img_path: str) -> Tuple[List[str], List[int]]:
@@ -430,7 +471,7 @@ def project_points_to_image(points_3d: np.ndarray,
 
 
 def zbuffer_filter(points_2d: np.ndarray, depths: np.ndarray,
-                   image_shape: Tuple[int, int]) -> np.ndarray:
+                   image_shape: Tuple[int, int]) -> Tuple[np.ndarray, np.ndarray]:
     """
     Z-buffer 遮挡过滤：对每个像素只保留深度最小（最近）的点
 
@@ -440,7 +481,9 @@ def zbuffer_filter(points_2d: np.ndarray, depths: np.ndarray,
         image_shape: (h, w)
 
     Returns:
-        np.ndarray: 布尔掩码 (M,)，True 表示该点是其像素上最近的点
+        Tuple[np.ndarray, np.ndarray]:
+            keep: 布尔掩码 (M,)，True 表示该点通过基础 z-buffer 过滤
+            depth_offsets: 每个点相对其像素最近深度的偏差 (M,)
     """
     h, w = image_shape[:2]
     xi = np.clip(np.round(points_2d[:, 0]).astype(np.int32), 0, w - 1)
@@ -453,10 +496,11 @@ def zbuffer_filter(points_2d: np.ndarray, depths: np.ndarray,
     np.minimum.at(depth_buffer, (yi, xi), depths.astype(np.float32))
 
     # 保留深度在容差范围内的点（容差应对同一表面多个点的微小深度差异）
-    tolerance = 0.15  # 15cm
-    keep = depths <= depth_buffer[yi, xi] + tolerance
+    min_depths = depth_buffer[yi, xi]
+    depth_offsets = depths - min_depths
+    keep = depth_offsets <= Config.ZBUFFER_BASE_TOLERANCE
 
-    return keep
+    return keep, depth_offsets
 
 
 def round_interpolation_labels(label_map: np.ndarray, points_2d: np.ndarray) -> np.ndarray:
@@ -505,6 +549,7 @@ def load_label_map_for_pose(
     pose_timestamp: int,
     img_path: str,
     color_to_class: Dict[int, int],
+    erosion_class_ids: Dict[str, int],
     label_cache: "OrderedDict[int, np.ndarray]",
     expected_image_size: Tuple[int, int],
 ) -> Optional[np.ndarray]:
@@ -543,6 +588,8 @@ def load_label_map_for_pose(
             f"请先确保 mask_id 已正确映回相机分辨率。"
         )
 
+    label_map = erode_target_classes(label_map, erosion_class_ids)
+
     label_cache[pose_timestamp] = label_map
     if len(label_cache) > Config.LABEL_CACHE_SIZE:
         label_cache.popitem(last=False)
@@ -556,6 +603,8 @@ def color_point_cloud_with_majority_vote(
     inter_params: Dict,
     palette_rgb: np.ndarray,
     color_to_class: Dict[int, int],
+    erosion_class_ids: Dict[str, int],
+    zbuffer_zero_tol_class_ids: Dict[str, int],
     label_cache: "OrderedDict[int, np.ndarray]",
 ) -> Optional[o3d.geometry.PointCloud]:
     """
@@ -595,6 +644,7 @@ def color_point_cloud_with_majority_vote(
             pose_timestamp,
             img_path,
             color_to_class,
+            erosion_class_ids,
             label_cache,
             expected_image_size,
         )
@@ -609,12 +659,18 @@ def color_point_cloud_with_majority_vote(
             continue
 
         # Z-buffer 遮挡过滤：只保留每个像素上最近的点，防止背景点偷到前景类别
-        visible = zbuffer_filter(points_2d, depths, label_map.shape)
+        visible, depth_offsets = zbuffer_filter(points_2d, depths, label_map.shape)
         points_2d = points_2d[visible]
         valid_indices = valid_indices[visible]
+        depth_offsets = depth_offsets[visible]
 
         labels = round_interpolation_labels(label_map, points_2d)
         valid_label_mask = (labels >= 0) & (labels < num_classes)
+        if zbuffer_zero_tol_class_ids:
+            zero_tol_class_values = np.array(list(zbuffer_zero_tol_class_ids.values()), dtype=np.int16)
+            strict_class_mask = np.isin(labels, zero_tol_class_values)
+            strict_depth_mask = depth_offsets <= Config.ZBUFFER_STRICT_EPS
+            valid_label_mask &= (~strict_class_mask) | strict_depth_mask
         if not np.any(valid_label_mask):
             continue
 
@@ -663,10 +719,26 @@ def main(global_pcd_path: str, img_path: str) -> None:
     # 加载相机参数与类别色盘
     try:
         ext_params, inter_params = load_camera_params()
-        palette_rgb, color_to_class = load_palette_and_lookup()
+        palette_rgb, color_to_class, class_name_to_id = load_palette_and_lookup()
     except Exception as e:
         print(f"错误: 加载必要配置失败: {e}")
         return
+
+    erosion_class_ids = {
+        name: class_name_to_id[name]
+        for name in Config.EROSION_CLASS_NAMES
+        if name in class_name_to_id
+    }
+    print(f"腐蚀类别: {sorted(erosion_class_ids.keys())}, kernel={Config.EROSION_KERNEL_SIZE}, iterations={Config.EROSION_ITERATIONS}")
+    zbuffer_zero_tol_class_ids = {
+        name: class_name_to_id[name]
+        for name in Config.ZBUFFER_ZERO_TOLERANCE_CLASS_NAMES
+        if name in class_name_to_id
+    }
+    print(
+        f"零容差z-buffer类别: {sorted(zbuffer_zero_tol_class_ids.keys())}, "
+        f"base_tolerance={Config.ZBUFFER_BASE_TOLERANCE}, strict_eps={Config.ZBUFFER_STRICT_EPS}"
+    )
 
     # 加载pose
     sorted_pose_files, _ = load_pose_files(img_path)
@@ -696,6 +768,8 @@ def main(global_pcd_path: str, img_path: str) -> None:
             inter_params=inter_params,
             palette_rgb=palette_rgb,
             color_to_class=color_to_class,
+            erosion_class_ids=erosion_class_ids,
+            zbuffer_zero_tol_class_ids=zbuffer_zero_tol_class_ids,
             label_cache=label_cache,
         )
     except ValueError as e:
@@ -706,7 +780,7 @@ def main(global_pcd_path: str, img_path: str) -> None:
         return
 
     pcd_stem = os.path.splitext(os.path.basename(global_pcd_path))[0]
-    output_file = os.path.join(res_dir, f"{pcd_stem}_color.pcd")
+    output_file = os.path.join(res_dir, f"{pcd_stem}_color_zbuffer.pcd")
     o3d.io.write_point_cloud(output_file, colored_pcd)
     print(f"\n成功保存彩色全局点云: {output_file}")
 

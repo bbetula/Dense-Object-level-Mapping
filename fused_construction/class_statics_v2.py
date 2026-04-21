@@ -4,18 +4,22 @@ import time
 import numpy as np
 import open3d as o3d
 from collections import Counter
-from class_statics_config import ADE20K_CATEGORIES, COLOR_TOLERANCE, DEFAULT_MAP_PATH
+from class_statics_config import LABEL_CHOICE, COLOR_TOLERANCE, DEFAULT_MAP_PATH
 
+if LABEL_CHOICE == "ADE20K":
+    from class_statics_config import ADE20K_CATEGORIES
+    CATEGORIES = ADE20K_CATEGORIES
+elif LABEL_CHOICE == "SCANNET_NYU40":
+    from class_statics_config import SCANNET_NYU40_CATEGORIES
+    CATEGORIES = SCANNET_NYU40_CATEGORIES
 
 INFO_TXT_PATH = os.path.join(os.path.dirname(__file__), "txt/info.txt")
-
-
 def load_category_config() -> tuple[np.ndarray, list[str], dict]:
     """
     加载类别配置并转换格式
     """
-    category_names = list(ADE20K_CATEGORIES.keys())
-    category_colors = np.array(list(ADE20K_CATEGORIES.values()), dtype=int)
+    category_names = list(CATEGORIES.keys())
+    category_colors = np.array(list(CATEGORIES.values()), dtype=int)
     category_counts = {name: 0 for name in category_names}
     category_counts["其他"] = 0
     return category_colors, category_names, category_counts

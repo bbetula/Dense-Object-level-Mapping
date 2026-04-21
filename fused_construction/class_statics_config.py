@@ -5,9 +5,51 @@ DEFAULT_MAP_PATHS = {
     "outdoor1": "/data1/user/data/fastlivo_output_outdoor_1s/lidar/res",
     "outdoor2": "/data1/user/data/fastlivo_output_qs2_03.17/lidar/res",
 }
-DATA_CHOICE = "outdoor2"
+# 全局融合点云路径
+GLOBAL_PCD_PATHS = {
+    "indoor1": "/data1/user/data/fastlivo_output_indoor_107/all_original.pcd",
+    "outdoor1": "/data1/user/data/fastlivo_output_outdoor_1s/all_original.pcd",
+    "outdoor2": "/data1/user/data/fastlivo_output_qs2_03.17/all_raw_qs2_03.17.pcd",
+}
+# 默认图像路径（用于2D-3D投影生成语义点云）
+DEFAULT_IMG_PATHS = {
+    "indoor1": "/data1/user/data/fastlivo_output_indoor_107/image",
+    "outdoor1": "/data1/user/data/fastlivo_output_outdoor_1s/image",
+    "outdoor2": "/data1/user/data/fastlivo_output_qs2_03.17/image", #1.3h
+}
+
 LABEL_CHOICE = "ADE20K"  # "ADE20K" or "SCANNET_NYU40"
+DATA_CHOICE = "outdoor2"
+# 配置pipeline路径
+
+# (1)二维图像语义分割
+DEFAULT_IMG_PATH = DEFAULT_IMG_PATHS[DATA_CHOICE]
+IMAGES_DIR = DEFAULT_IMG_PATH
+
+# (2)2D-3D投影生成语义点云
+GLOBAL_PCD_PATH = GLOBAL_PCD_PATHS[DATA_CHOICE]
 DEFAULT_MAP_PATH = DEFAULT_MAP_PATHS[DATA_CHOICE]
+
+
+# 手持设备：Handheld_device_config indoor1 outdoor1
+# 无人机配置文件：Drone_newcam_config outdoor2
+
+DEFAULT_YAML_PATH = "Drone_newcam_config"
+# DEFAULT_YAML_PATH = "Handheld_device_config"
+
+# (3)点云hdbscan聚类
+# scannet
+# input_scenes_dir = "/data1/data/scannet/output_bbox/pcd_from_ply"
+# input_scenes_dir = "/data1/data/scannet/output_single_bbox/pcd_from_ply"
+
+
+# ade20k
+
+OUTSCENE = False
+input_scenes_dir = "/data1/user/data/fastlivo_output_qs2_03.17/lidar/test"
+
+# OUTSCENE = True
+# input_scenes_dir = "/data1/user/data/fastlivo_output_outdoor_1s/lidar/res"
 
 # 多类别颜色配置文件
 # 格式：{类别名: RGB颜色列表}

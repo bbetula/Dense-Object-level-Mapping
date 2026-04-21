@@ -33,6 +33,8 @@ class Config:
     RES_SUBDIR = "res"
 
     MIN_VOTES_PER_POINT = 5       # 点被至少观测多少次才赋类别
+    MIN_TOP1_RATIO = 0.6          # top1 票数占总票数的最小比例
+    MIN_TOP1_MINUS_TOP2 = 2       # top1 与 top2 的最小票差
     LABEL_CACHE_SIZE = 32         # 滑动缓存标签图
     PROGRESS_INTERVAL = 50        # 每隔多少帧打印一次耗时
 
@@ -645,13 +647,36 @@ def color_point_cloud_with_majority_vote(
         return None
 
     winner_labels = np.argmax(vote_counts, axis=1)
+    confident_mask = has_votes.copy()
+    confident_count = voted_points
+    if voted_points > 0:
+        voted_indices = np.where(has_votes)[0]
+        voted_vote_counts = vote_counts[voted_indices].astype(np.int32, copy=True)
+        top1_labels = winner_labels[voted_indices]
+        top1_votes = voted_vote_counts[np.arange(len(voted_indices)), top1_labels]
+        voted_vote_counts[np.arange(len(voted_indices)), top1_labels] = -1
+        top2_votes = voted_vote_counts.max(axis=1)
+        total_votes = observation_counts[voted_indices].astype(np.float32)
+        top1_ratio = top1_votes / np.maximum(total_votes, 1.0)
+        top1_margin = top1_votes - np.maximum(top2_votes, 0)
+        stable = (
+            (top1_ratio >= Config.MIN_TOP1_RATIO) &
+            (top1_margin >= Config.MIN_TOP1_MINUS_TOP2)
+        )
+        confident_mask[:] = False
+        confident_mask[voted_indices] = stable
+        confident_count = int(np.sum(stable))
+
     all_colors = np.zeros((num_points, 3), dtype=np.float32)
-    all_colors[has_votes] = palette_rgb[winner_labels[has_votes]] / 255.0
+    all_colors[confident_mask] = palette_rgb[winner_labels[confident_mask]] / 255.0
 
     colored_pcd = make_colored_point_cloud(points, all_colors)
 
     avg_votes = float(observation_counts[has_votes].mean()) if voted_points > 0 else 0.0
-    print(f"  全帧投票完成: 有效帧 {used_frames}/{total_frames}，赋色点 {voted_points}/{num_points}，平均票数 {avg_votes:.1f}")
+    print(
+        f"  全帧投票完成: 有效帧 {used_frames}/{total_frames}，初始赋色点 {voted_points}/{num_points}，"
+        f"置信过滤后 {confident_count}/{num_points}，平均票数 {avg_votes:.1f}"
+    )
 
     return colored_pcd
 
@@ -678,6 +703,7 @@ def main(global_pcd_path: str, img_path: str) -> None:
     print(f"全局点云: {global_pcd_path}")
     print(f"pose帧数: {len(pose_records)}")
     print(f"最少票数: {Config.MIN_VOTES_PER_POINT}，类别数: {len(palette_rgb)}")
+    print(f"投票置信过滤: ratio>={Config.MIN_TOP1_RATIO}, top1-top2>={Config.MIN_TOP1_MINUS_TOP2}")
     print(f"投影标签尺寸: {inter_params['image_width']}x{inter_params['image_height']}")
 
     output_root = resolve_output_root(global_pcd_path)
@@ -706,7 +732,7 @@ def main(global_pcd_path: str, img_path: str) -> None:
         return
 
     pcd_stem = os.path.splitext(os.path.basename(global_pcd_path))[0]
-    output_file = os.path.join(res_dir, f"{pcd_stem}_color.pcd")
+    output_file = os.path.join(res_dir, f"{pcd_stem}_color_confidence.pcd")
     o3d.io.write_point_cloud(output_file, colored_pcd)
     print(f"\n成功保存彩色全局点云: {output_file}")
 

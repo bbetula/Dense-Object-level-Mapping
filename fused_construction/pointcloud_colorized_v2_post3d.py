@@ -33,6 +33,10 @@ class Config:
     RES_SUBDIR = "res"
 
     MIN_VOTES_PER_POINT = 5       # 点被至少观测多少次才赋类别
+    POST3D_TARGET_CLASS_NAMES = ("tree", "person")
+    POST3D_DBSCAN_EPS = 0.2
+    POST3D_DBSCAN_MIN_POINTS = 10
+    POST3D_KEEP_MIN_CLUSTER_POINTS = 30
     LABEL_CACHE_SIZE = 32         # 滑动缓存标签图
     PROGRESS_INTERVAL = 50        # 每隔多少帧打印一次耗时
 
@@ -187,23 +191,71 @@ def save_camera_params_to_txt(ext_params: Dict, inter_params: Dict):
     print(f"内参/外参已保存到: {Config.CONFIG_TXT_PATH}")
 
 
-def load_palette_and_lookup() -> Tuple[np.ndarray, Dict[int, int]]:
+def load_palette_and_lookup() -> Tuple[np.ndarray, Dict[int, int], Dict[str, int]]:
     """
     加载色盘并建立 RGB->类别ID 映射表
 
     Returns:
-        Tuple[np.ndarray, Dict[int, int]]: 色盘 (C,3) RGB, 映射表(key=24bit RGB整数, value=class_id)
+        Tuple[np.ndarray, Dict[int, int], Dict[str, int]]: 色盘 (C,3) RGB, 映射表(key=24bit RGB整数, value=class_id), 类别名到ID映射
     """
     palette_yaml = load_yaml_config(Config.PALETTE_YAML_PATH)
     palette = np.array(palette_yaml.get("palette", []), dtype=np.uint8)
+    classes = palette_yaml.get("classes", [])
     if palette.ndim != 2 or palette.shape[1] != 3:
         raise ValueError(f"色盘格式错误: {Config.PALETTE_YAML_PATH}")
+    if len(classes) != len(palette):
+        raise ValueError(f"类别列表与色盘长度不一致: {Config.PALETTE_YAML_PATH}")
 
     color_to_class = {}
     for class_id, rgb in enumerate(palette):
         key = (int(rgb[0]) << 16) | (int(rgb[1]) << 8) | int(rgb[2])
         color_to_class[key] = class_id
-    return palette, color_to_class
+    class_name_to_id = {str(name): idx for idx, name in enumerate(classes)}
+    return palette, color_to_class, class_name_to_id
+
+
+def postprocess_labels_3d(
+    points: np.ndarray,
+    labels: np.ndarray,
+    valid_mask: np.ndarray,
+    target_class_ids: Dict[str, int],
+) -> np.ndarray:
+    """
+    对指定类别执行 3D 连通簇清理，删除小的孤立噪声簇。
+    """
+    if not target_class_ids:
+        return valid_mask
+
+    filtered_mask = valid_mask.copy()
+    for class_name, class_id in target_class_ids.items():
+        class_indices = np.where(filtered_mask & (labels == class_id))[0]
+        if len(class_indices) == 0:
+            continue
+
+        class_pcd = o3d.geometry.PointCloud()
+        class_pcd.points = o3d.utility.Vector3dVector(points[class_indices])
+        cluster_labels = np.asarray(
+            class_pcd.cluster_dbscan(
+                eps=Config.POST3D_DBSCAN_EPS,
+                min_points=Config.POST3D_DBSCAN_MIN_POINTS,
+                print_progress=False,
+            )
+        )
+        if cluster_labels.size == 0:
+            continue
+
+        keep_local = np.zeros(len(class_indices), dtype=bool)
+        unique_ids, counts = np.unique(cluster_labels[cluster_labels >= 0], return_counts=True)
+        keep_cluster_ids = unique_ids[counts >= Config.POST3D_KEEP_MIN_CLUSTER_POINTS]
+        if len(keep_cluster_ids) > 0:
+            keep_local = np.isin(cluster_labels, keep_cluster_ids)
+
+        removed = int(np.sum(~keep_local))
+        if removed > 0:
+            filtered_mask[class_indices[~keep_local]] = False
+            print(f"  [3D后处理] {class_name}: 删除 {removed} 个孤立点")
+
+    return filtered_mask
 
 
 def load_pose_files(img_path: str) -> Tuple[List[str], List[int]]:
@@ -556,6 +608,7 @@ def color_point_cloud_with_majority_vote(
     inter_params: Dict,
     palette_rgb: np.ndarray,
     color_to_class: Dict[int, int],
+    post3d_class_ids: Dict[str, int],
     label_cache: "OrderedDict[int, np.ndarray]",
 ) -> Optional[o3d.geometry.PointCloud]:
     """
@@ -645,13 +698,18 @@ def color_point_cloud_with_majority_vote(
         return None
 
     winner_labels = np.argmax(vote_counts, axis=1)
+    filtered_mask = postprocess_labels_3d(points, winner_labels, has_votes, post3d_class_ids)
     all_colors = np.zeros((num_points, 3), dtype=np.float32)
-    all_colors[has_votes] = palette_rgb[winner_labels[has_votes]] / 255.0
+    all_colors[filtered_mask] = palette_rgb[winner_labels[filtered_mask]] / 255.0
 
     colored_pcd = make_colored_point_cloud(points, all_colors)
 
     avg_votes = float(observation_counts[has_votes].mean()) if voted_points > 0 else 0.0
-    print(f"  全帧投票完成: 有效帧 {used_frames}/{total_frames}，赋色点 {voted_points}/{num_points}，平均票数 {avg_votes:.1f}")
+    filtered_count = int(np.sum(filtered_mask))
+    print(
+        f"  全帧投票完成: 有效帧 {used_frames}/{total_frames}，初始赋色点 {voted_points}/{num_points}，"
+        f"3D后处理后 {filtered_count}/{num_points}，平均票数 {avg_votes:.1f}"
+    )
 
     return colored_pcd
 
@@ -663,10 +721,16 @@ def main(global_pcd_path: str, img_path: str) -> None:
     # 加载相机参数与类别色盘
     try:
         ext_params, inter_params = load_camera_params()
-        palette_rgb, color_to_class = load_palette_and_lookup()
+        palette_rgb, color_to_class, class_name_to_id = load_palette_and_lookup()
     except Exception as e:
         print(f"错误: 加载必要配置失败: {e}")
         return
+
+    post3d_class_ids = {
+        name: class_name_to_id[name]
+        for name in Config.POST3D_TARGET_CLASS_NAMES
+        if name in class_name_to_id
+    }
 
     # 加载pose
     sorted_pose_files, _ = load_pose_files(img_path)
@@ -678,6 +742,11 @@ def main(global_pcd_path: str, img_path: str) -> None:
     print(f"全局点云: {global_pcd_path}")
     print(f"pose帧数: {len(pose_records)}")
     print(f"最少票数: {Config.MIN_VOTES_PER_POINT}，类别数: {len(palette_rgb)}")
+    print(
+        f"3D后处理类别: {sorted(post3d_class_ids.keys())}, "
+        f"dbscan_eps={Config.POST3D_DBSCAN_EPS}, min_points={Config.POST3D_DBSCAN_MIN_POINTS}, "
+        f"keep_min_cluster={Config.POST3D_KEEP_MIN_CLUSTER_POINTS}"
+    )
     print(f"投影标签尺寸: {inter_params['image_width']}x{inter_params['image_height']}")
 
     output_root = resolve_output_root(global_pcd_path)
@@ -696,6 +765,7 @@ def main(global_pcd_path: str, img_path: str) -> None:
             inter_params=inter_params,
             palette_rgb=palette_rgb,
             color_to_class=color_to_class,
+            post3d_class_ids=post3d_class_ids,
             label_cache=label_cache,
         )
     except ValueError as e:
@@ -706,7 +776,7 @@ def main(global_pcd_path: str, img_path: str) -> None:
         return
 
     pcd_stem = os.path.splitext(os.path.basename(global_pcd_path))[0]
-    output_file = os.path.join(res_dir, f"{pcd_stem}_color.pcd")
+    output_file = os.path.join(res_dir, f"{pcd_stem}_color_post3d.pcd")
     o3d.io.write_point_cloud(output_file, colored_pcd)
     print(f"\n成功保存彩色全局点云: {output_file}")
 

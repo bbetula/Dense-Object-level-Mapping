@@ -5,18 +5,20 @@ import json
 import re
 import numpy as np
 import open3d as o3d
-from class_statics_config import SCANNET_NYU40_CATEGORIES, ADE20K_CATEGORIES, COLOR_TOLERANCE
+from class_statics_config import SCANNET_NYU40_CATEGORIES, ADE20K_CATEGORIES, COLOR_TOLERANCE, LABEL_CHOICE, input_scenes_dir
 
 # ===== 配置区 =====
-# 输入：包含多个场景 PCD 文件的文件夹
-INPUT_SCENES_DIR = Path("/data1/data/scannet/output_bbox/pcd_from_ply")
-# INPUT_SCENES_DIR = Path("/data1/data/scannet/output_single_bbox/pcd_from_ply")
-# 输出：大文件夹，每个场景在其中对应一个子文件夹
+# 只需要在这个文件里修改原始输入路径；
+# 后续脚本会依次复用本文件输出目录作为自己的输入目录。
+INPUT_SCENES_DIR = Path(input_scenes_dir)
 OUTPUT_BASE_DIR = INPUT_SCENES_DIR.parent / "color_separated_scenes"
-# 过滤掉颜色对应点数过少的簇
-MIN_POINTS_PER_COLOR = 10        
-# 选择使用的类别列表              
-CATEGORIES = SCANNET_NYU40_CATEGORIES
+
+if LABEL_CHOICE == "SCANNET_NYU40":
+    CATEGORIES = SCANNET_NYU40_CATEGORIES
+    MIN_POINTS_PER_COLOR = 10
+elif LABEL_CHOICE == "ADE20K":
+    CATEGORIES = ADE20K_CATEGORIES
+    MIN_POINTS_PER_COLOR = 100
 # ==================================
 
 def load_point_cloud(path: Path) -> o3d.geometry.PointCloud:

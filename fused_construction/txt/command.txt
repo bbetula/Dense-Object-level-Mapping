@@ -7,4 +7,11 @@ watch -n 1 nvidia-smi
 设置显示
 echo export DISPLAY=\"localhost:13.0\" >> ~/.bashrc
 
+代理
+查看代理
+env |grep -i proxy 
+清除代理
+unset http_proxy
+unset https_proxy
+
 

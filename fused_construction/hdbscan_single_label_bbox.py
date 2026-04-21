@@ -2,23 +2,28 @@ from pathlib import Path
 from typing import Dict, List, Sequence, Optional, Tuple
 
 import hdbscan
+import matplotlib.pyplot as plt
 import numpy as np
 import open3d as o3d
 from sklearn.neighbors import NearestNeighbors
+from class_statics_config import LABEL_CHOICE
+from filter_detection_categories_bbox import OUTPUT_BASE_DIR as FILTERED_TARGETS_DIR
 
-INPUT_BASE_DIR = Path("/data1/data/scannet/output_bbox/detection_targets")  
-# INPUT_BASE_DIR = Path("/data1/data/scannet/output_single_bbox/detection_targets")  
-OUTPUT_BASE_DIR = INPUT_BASE_DIR.parent / "hdbscan_scenes"        # 各场景 HDBSCAN 结果根目录
+if LABEL_CHOICE == "SCANNET_NYU40":
+    INPUT_BASE_DIR = FILTERED_TARGETS_DIR
+    OUTPUT_BASE_DIR = INPUT_BASE_DIR.parent / "hdbscan_scenes"
+
+elif LABEL_CHOICE == "ADE20K":
+    INPUT_BASE_DIR = FILTERED_TARGETS_DIR
+    OUTPUT_BASE_DIR = INPUT_BASE_DIR.parent / "hdbscan_scenes_bbox"
 
 MIN_CLUSTER_SIZE = 5             # 第一阶段极宽松，让 HDBSCAN 发现所有可能的簇
 MIN_SAMPLES = 3                  # 配合宽松的 min_cluster_size
 MIN_CLUSTER_POINTS = 10          # 二阶段自适应过滤的绝对下限（兜底）
+MAX_CLUSTER_FILTER = 50          # 自适应过滤阈值上限：防止 log-gap 误删合法的小物体簇
 NOISE_ABSORB_FACTOR = 15.0       # 噪声点吸收半径 = NOISE_ABSORB_FACTOR × epsilon
                                  # 增大：bbox 覆盖更广；减小：仅吸收紧邻外围点
-USE_ORIENTED_BBOX = True
-
-# False: 线框统一白色；True: 线框使用对应实例的 tab20 颜色
-BBOX_INSTANCE_COLOR = True
+BBOX_USE_INSTANCE_COLOR = True               # True: AABB 框颜色=实例点云均值色；False: AABB 框颜色=tab20 colormap
 BBOX_LINE_WIDTH = 0.005          # 线框粗细（米），用于将边转为三角面片让 MeshLab 显示颜色
 
 #   cluster_selection_epsilon 控制簇间最小距离：
@@ -82,13 +87,9 @@ def create_bbox_line_set(
     return line_set
 
 def extract_bbox(instance: o3d.geometry.PointCloud) -> Tuple[o3d.geometry.Geometry3D, np.ndarray, List[List[float]]]:
-    """依据开关返回包围盒、旋转矩阵"""
-    if USE_ORIENTED_BBOX:
-        bbox = instance.get_oriented_bounding_box()
-        rotation = np.asarray(bbox.R)
-    else:
-        bbox = instance.get_axis_aligned_bounding_box()
-        rotation = np.eye(3)
+    """返回 AABB 包围盒和单位旋转矩阵"""
+    bbox = instance.get_axis_aligned_bounding_box()
+    rotation = np.eye(3)
     return bbox, rotation, rotation.tolist()
 
 def combine_line_sets(line_sets: Sequence[o3d.geometry.LineSet]) -> Optional[o3d.geometry.LineSet]:
@@ -345,7 +346,7 @@ def filter_clusters_by_loggap(
         threshold = int(counts_sorted[gap_idx]) + 1
     else:
         threshold = min_points
-    threshold = max(min_points, threshold)
+    threshold = max(min_points, min(threshold, MAX_CLUSTER_FILTER))
 
     small_cluster_ids = unique[counts < threshold]
     filtered = cluster_labels.copy()
@@ -428,19 +429,20 @@ def cluster_single_label_pcd(
     unique_clusters = [cid for cid in np.unique(cluster_labels) if cid != -1]
     if not unique_clusters:
         return result
+    cmap = plt.get_cmap("tab20")
     for cid in unique_clusters:
         idxs = np.where(cluster_labels == cid)[0]
 
         instance = pcd.select_by_index(idxs)
         bbox, rotation_np, rotation_list = extract_bbox(instance)
-        if BBOX_INSTANCE_COLOR:
+        if BBOX_USE_INSTANCE_COLOR:
             instance_colors = np.asarray(instance.colors)
             if len(instance_colors) > 0:
                 color = instance_colors.mean(axis=0).tolist()
             else:
                 color = (1.0, 1.0, 1.0)
         else:
-            color = (1.0, 1.0, 1.0)
+            color = cmap(cid % 20)[:3]
         line_set = create_bbox_line_set(bbox, color, rotation_np)
         result["line_sets"].append(line_set)
         prob = float(probs[idxs].mean()) if probs is not None else None

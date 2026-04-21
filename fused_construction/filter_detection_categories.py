@@ -62,12 +62,24 @@ elif LABEL_CHOICE == "ADE20K":
         "mirror",                                                        # ScanNet: mirror
     }
 
-    # 室外场景快捷开关：True 时强制使用室外类别（覆盖上面的设置）
-    OUTSCENE = False
+    # 室外场景快捷开关：True 时强制使用室外 thing 类别（覆盖上面的设置）
+    OUTSCENE = True
     OUTSCENE_CATEGORIES = {
-        "car", "van", "truck", "bus", "boat", "ship", "airplane",      # 车辆/交通
-        "person",                                                        # 行人
-        "bicycle", "minibike",                                           # 骑行者
+        # ── 交通工具 ──
+        "car", "van", "truck", "bus",
+        "bicycle", "minibike",
+        "boat", "ship", "airplane",
+        # ── 人/动物 ──
+        "person", "animal",
+        # ── 杆状/灯具 ──
+        "pole", "streetlight", "traffic light", "light",
+        # ── 标识/指示 ──
+        "signboard", "flag",
+        # ── 城市家具 ──
+        "bench", "booth", "ashcan",
+        # ── 独立物体 ──
+        "box", "barrel", "basket", "bottle", "pot", "vase",
+        "sculpture", "fountain", "tent",
     }
     CATEGORIES = ADE20K_CATEGORIES
 # ==================================

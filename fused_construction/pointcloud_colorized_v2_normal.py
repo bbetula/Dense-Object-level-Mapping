@@ -1,3 +1,11 @@
+"""
+全局点云全帧投票上色 + 3D法向量过滤地面误投影
+
+与 pointcloud_colorized_v2.py 的区别：
+  - 投票完成后，对非地面类别的点做法向量检测
+  - 法向量接近竖直向上的点 → 判定为地面误投影 → 不赋色
+  - 解决"悬垂遮挡投影"问题（腐蚀无法解决的类型）
+"""
 import os
 import sys
 import glob
@@ -7,142 +15,85 @@ import numpy as np
 import cv2
 from scipy.spatial.transform import Rotation as R
 import open3d as o3d
-from typing import Tuple, List, Dict, Optional, Union
+from typing import Tuple, List, Dict, Optional, Union, Set
 from collections import OrderedDict
 from class_statics_config import GLOBAL_PCD_PATH, DEFAULT_IMG_PATH, DEFAULT_YAML_PATH
 
 
-# ======================== 配置常量（集中管理，便于修改）========================
+# ======================== 配置常量 ========================
 class Config:
-    """配置类：集中管理所有路径和参数"""
-    SEG_SUBDIR_NAME = "res_dinov3_whole"  # 分割图像子目录名称
+    SEG_SUBDIR_NAME = "res_dinov3_whole"
     MASK_ID_SUFFIX = "_mask_id.png"
     MASK_COLOR_SUFFIX = "_mask.png"
     PALETTE_YAML_PATH = os.path.normpath(
         os.path.join(os.path.dirname(__file__), "..", "dinov3", "yaml", "ADE20k.yaml")
     )
 
-    # YAML配置路径
-    # 无人机配置文件：Drone_newcam_config
-    # 手持设备：Handheld_device_config
     EXT_YAML_PATH = os.path.join(DEFAULT_YAML_PATH, "avia.yaml")
     INTER_YAML_PATH = os.path.join(DEFAULT_YAML_PATH, "camera_pinhole.yaml")
-
-    # 输出配置（在DEFAULT_YAML_PATH下的config.txt）
     CONFIG_TXT_PATH = os.path.join(DEFAULT_YAML_PATH, "config.txt")
     RES_SUBDIR = "res"
 
-    MIN_VOTES_PER_POINT = 5       # 点被至少观测多少次才赋类别
-    LABEL_CACHE_SIZE = 32         # 滑动缓存标签图
-    PROGRESS_INTERVAL = 50        # 每隔多少帧打印一次耗时
+    MIN_VOTES_PER_POINT = 5
+    LABEL_CACHE_SIZE = 32
+    PROGRESS_INTERVAL = 50
 
-# ======================== 工具函数（坐标变换相关）========================
+    # ── 法向量过滤参数 ──
+    NORMAL_FILTER_ENABLED = True
+    NORMAL_Z_THRESHOLD = 0.85       # |normal_z| > 此值视为竖直（地面/天花板方向）
+    NORMAL_KNN = 30                 # 估计法向量的 KNN 邻域
+    GROUND_CLASS_NAMES = {
+        "floor", "road", "sidewalk", "grass", "earth", "sand",
+        "field", "path", "runway", "dirt track", "land",
+        "rug", "floor mat", "sea", "water", "river", "lake",
+        "ceiling",
+    }
+
+
+# ======================== 工具函数 ========================
 def rotation_matrix_to_quaternion(rotation_matrix: Union[List[float], np.ndarray]) -> np.ndarray:
-    """
-    将3x3旋转矩阵转换为四元数 [x, y, z, w]
-    
-    Args:
-        rotation_matrix: 3x3旋转矩阵或9元素列表
-    
-    Returns:
-        np.ndarray: 四元数 [x, y, z, w]
-    """
-    # 重塑为3x3矩阵
     rot_mat = np.array(rotation_matrix).reshape(3, 3) if len(rotation_matrix) == 9 else np.array(rotation_matrix)
-    # 转换为四元数
     rotation = R.from_matrix(rot_mat)
     return rotation.as_quat()
 
 
 def quaternion_to_rotation_matrix(quaternion: np.ndarray) -> np.ndarray:
-    """
-    将四元数转换为3x3旋转矩阵
-    
-    Args:
-        quaternion: 四元数 [x, y, z, w]
-    
-    Returns:
-        np.ndarray: 3x3旋转矩阵
-    """
     rotation = R.from_quat(quaternion)
     return rotation.as_matrix()
 
 
 def transform_point_cloud(points: np.ndarray, position: np.ndarray, rotation_matrix: np.ndarray) -> np.ndarray:
-    """
-    将点云变换到目标坐标系
-    
-    Args:
-        points: 点云坐标 (N, 3)
-        position: 平移向量 (3,)
-        rotation_matrix: 旋转矩阵 (3, 3)
-    
-    Returns:
-        np.ndarray: 变换后的点云 (N, 3)
-    """
     return np.dot(points, rotation_matrix.T) + position
 
 
-# ======================== 配置加载函数 ========================
+# ======================== 配置加载 ========================
 def load_yaml_config(yaml_path: str) -> Dict:
-    """
-    加载YAML配置文件
-    
-    Args:
-        yaml_path: YAML文件路径
-    
-    Returns:
-        Dict: YAML配置字典
-    
-    Raises:
-        FileNotFoundError: 文件不存在时抛出
-        yaml.YAMLError: YAML解析失败时抛出
-    """
     if not os.path.exists(yaml_path):
         raise FileNotFoundError(f"YAML文件不存在: {yaml_path}")
-    
     with open(yaml_path, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
 
 def load_camera_params() -> Tuple[Dict, Dict]:
-    """
-    加载相机内参和外参，并保存到config.txt
-    
-    Returns:
-        Tuple[Dict, Dict]: 外参字典, 内参字典
-    """
-    # 加载外参
     ext_params_yaml = load_yaml_config(Config.EXT_YAML_PATH)
     inter_params_yaml = load_yaml_config(Config.INTER_YAML_PATH)
-    
-    # 解析外参
+
     pcl = np.array(ext_params_yaml['extrin_calib']['Pcl'])
     rcl = np.array(ext_params_yaml['extrin_calib']['Rcl']).reshape(3, 3)
-    
-    # 构建雷达到相机的齐次变换矩阵 T_cl
     T_cl = np.eye(4)
     T_cl[:3, :3] = rcl
     T_cl[:3, 3] = pcl
-    
-    # 计算相机到雷达的逆变换 T_lc
     T_lc = np.linalg.inv(T_cl)
     rcl_inv = T_lc[:3, :3]
     pcl_inv = T_lc[:3, 3]
-    
-    # 转换为四元数
+
     ext_quat = rotation_matrix_to_quaternion(rcl_inv)
     ext_params = {
-        'ext_pos_x': pcl_inv[0],
-        'ext_pos_y': pcl_inv[1],
-        'ext_pos_z': pcl_inv[2],
-        'ext_q_x': ext_quat[0],
-        'ext_q_y': ext_quat[1],
-        'ext_q_z': ext_quat[2],
-        'ext_q_w': ext_quat[3]
+        'ext_pos_x': pcl_inv[0], 'ext_pos_y': pcl_inv[1], 'ext_pos_z': pcl_inv[2],
+        'ext_q_x': ext_quat[0], 'ext_q_y': ext_quat[1],
+        'ext_q_z': ext_quat[2], 'ext_q_w': ext_quat[3],
     }
-    
-    # 解析内参
+
     scale = inter_params_yaml['scale']
     inter_params = {
         'scale': scale,
@@ -152,29 +103,17 @@ def load_camera_params() -> Tuple[Dict, Dict]:
         'fy': inter_params_yaml['cam_fy'] * scale,
         'cx': inter_params_yaml['cam_cx'] * scale,
         'cy': inter_params_yaml['cam_cy'] * scale,
-        'k1': inter_params_yaml['cam_d0'],
-        'k2': inter_params_yaml['cam_d1'],
-        'p1': inter_params_yaml['cam_d2'],
-        'p2': inter_params_yaml['cam_d3'],
-        'k3': 0.0
+        'k1': inter_params_yaml['cam_d0'], 'k2': inter_params_yaml['cam_d1'],
+        'p1': inter_params_yaml['cam_d2'], 'p2': inter_params_yaml['cam_d3'],
+        'k3': 0.0,
     }
-    
-    # 保存到config.txt
+
     save_camera_params_to_txt(ext_params, inter_params)
-    
     return ext_params, inter_params
 
 
 def save_camera_params_to_txt(ext_params: Dict, inter_params: Dict):
-    """
-    将相机内参和外参保存到config.txt
-    
-    Args:
-        ext_params: 外参字典
-        inter_params: 内参字典
-    """
     os.makedirs(os.path.dirname(Config.CONFIG_TXT_PATH), exist_ok=True)
-    
     with open(Config.CONFIG_TXT_PATH, 'w', encoding='utf-8') as f:
         f.write("相机内参:\n")
         f.write(f"  image_width: {inter_params['image_width']}, image_height: {inter_params['image_height']}\n")
@@ -183,19 +122,14 @@ def save_camera_params_to_txt(ext_params: Dict, inter_params: Dict):
         f.write("相机外参:\n")
         for key, value in ext_params.items():
             f.write(f"  {key}: {value}\n")
-    
     print(f"内参/外参已保存到: {Config.CONFIG_TXT_PATH}")
 
 
-def load_palette_and_lookup() -> Tuple[np.ndarray, Dict[int, int]]:
-    """
-    加载色盘并建立 RGB->类别ID 映射表
-
-    Returns:
-        Tuple[np.ndarray, Dict[int, int]]: 色盘 (C,3) RGB, 映射表(key=24bit RGB整数, value=class_id)
-    """
+def load_palette_and_lookup() -> Tuple[np.ndarray, Dict[int, int], List[str]]:
+    """加载色盘，返回 (palette_rgb, color_to_class, class_names)"""
     palette_yaml = load_yaml_config(Config.PALETTE_YAML_PATH)
     palette = np.array(palette_yaml.get("palette", []), dtype=np.uint8)
+    classes = palette_yaml.get("classes", [])
     if palette.ndim != 2 or palette.shape[1] != 3:
         raise ValueError(f"色盘格式错误: {Config.PALETTE_YAML_PATH}")
 
@@ -203,25 +137,26 @@ def load_palette_and_lookup() -> Tuple[np.ndarray, Dict[int, int]]:
     for class_id, rgb in enumerate(palette):
         key = (int(rgb[0]) << 16) | (int(rgb[1]) << 8) | int(rgb[2])
         color_to_class[key] = class_id
-    return palette, color_to_class
+
+    class_names = [str(c) for c in classes]
+    return palette, color_to_class, class_names
 
 
+def build_ground_class_ids(class_names: List[str]) -> Set[int]:
+    """从类别名构建地面类别 ID 集合"""
+    ground_ids = set()
+    for idx, name in enumerate(class_names):
+        if name.lower() in Config.GROUND_CLASS_NAMES:
+            ground_ids.add(idx)
+    return ground_ids
+
+
+# ======================== Pose 加载 ========================
 def load_pose_files(img_path: str) -> Tuple[List[str], List[int]]:
-    """
-    加载并排序所有pose文件（按时间戳）
-    
-    Args:
-        img_path: pose文件所在目录（与图像同目录）
-    
-    Returns:
-        Tuple[List[str], List[int]]: 排序后的pose文件路径, 对应的时间戳
-    """
     pose_files = glob.glob(os.path.join(img_path, "*.txt"))
     if not pose_files:
         print(f"警告: 在 {img_path} 中未找到pose文件")
         return [], []
-    
-    # 提取时间戳
     pose_data = []
     for pose_file in pose_files:
         try:
@@ -234,54 +169,25 @@ def load_pose_files(img_path: str) -> Tuple[List[str], List[int]]:
         except Exception as e:
             print(f"警告: 无法读取pose文件 {pose_file}: {e}，跳过")
             continue
-    
-    # 按时间戳排序
     pose_data.sort(key=lambda x: x[0])
-    sorted_pose_files = [d[1] for d in pose_data]
-    sorted_pose_timestamps = [d[0] for d in pose_data]
-    
-    return sorted_pose_files, sorted_pose_timestamps
+    return [d[1] for d in pose_data], [d[0] for d in pose_data]
 
 
 def load_pose_from_file(pose_file: str) -> Tuple[int, np.ndarray, np.ndarray]:
-    """
-    从pose文件加载时间戳、位置、四元数
-    
-    Args:
-        pose_file: pose文件路径
-    
-    Returns:
-        Tuple[int, np.ndarray, np.ndarray]: 时间戳, 位置(3,), 四元数(4,)
-    
-    Raises:
-        ValueError: 解析失败时抛出
-    """
     with open(pose_file, 'r', encoding='utf-8') as f:
         line = f.readline().strip()
         if not line:
             raise ValueError(f"pose文件为空: {pose_file}")
-        
         data = line.split()
         if len(data) < 8:
-            raise ValueError(f"pose文件格式错误，至少需要8个字段: {pose_file}")
-        
+            raise ValueError(f"pose文件格式错误: {pose_file}")
         timestamp = int(float(data[0]))
         position = np.array([float(data[1]), float(data[2]), float(data[3])])
         quaternion = np.array([float(data[4]), float(data[5]), float(data[6]), float(data[7])])
-        
         return timestamp, position, quaternion
 
 
 def build_pose_records(sorted_pose_files: List[str]) -> List[Tuple[int, np.ndarray, np.ndarray]]:
-    """
-    预加载pose文件，避免在滑窗投票中重复读盘
-
-    Args:
-        sorted_pose_files: 排序后的pose文件路径
-
-    Returns:
-        List[Tuple[int, np.ndarray, np.ndarray]]: (timestamp, position, quaternion)
-    """
     pose_records = []
     for pose_file in sorted_pose_files:
         try:
@@ -291,31 +197,19 @@ def build_pose_records(sorted_pose_files: List[str]) -> List[Tuple[int, np.ndarr
     return pose_records
 
 
+# ======================== 分割标签 ========================
 def find_corresponding_seg_files(pose_timestamp: int, img_path: str) -> Tuple[Optional[str], Optional[str]]:
-    """
-    查找与pose时间戳对应的分割结果文件（优先mask_id，兼容mask彩色图）
-
-    Args:
-        pose_timestamp: pose时间戳
-        img_path: 图像目录
-
-    Returns:
-        Tuple[Optional[str], Optional[str]]: (mask_id_path, mask_color_path)
-    """
     seg_dir = os.path.join(img_path, Config.SEG_SUBDIR_NAME)
     mask_id_file = os.path.join(seg_dir, f"{pose_timestamp}{Config.MASK_ID_SUFFIX}")
     mask_color_file = os.path.join(seg_dir, f"{pose_timestamp}{Config.MASK_COLOR_SUFFIX}")
-
     has_id = os.path.exists(mask_id_file)
     has_color = os.path.exists(mask_color_file)
     if not has_id and not has_color:
         return None, None
     return (mask_id_file if has_id else None), (mask_color_file if has_color else None)
 
+
 def resolve_output_root(global_pcd_path: str) -> str:
-    """
-    输出统一落在 lidar 目录下
-    """
     pcd_dir = os.path.dirname(global_pcd_path)
     if os.path.basename(os.path.normpath(pcd_dir)) == "lidar":
         return pcd_dir
@@ -323,9 +217,6 @@ def resolve_output_root(global_pcd_path: str) -> str:
 
 
 def build_camera_model(inter_params: Dict) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    构建相机内参与畸变参数
-    """
     camera_matrix = np.array([
         [inter_params['fx'], 0, inter_params['cx']],
         [0, inter_params['fy'], inter_params['cy']],
@@ -340,9 +231,6 @@ def build_camera_model(inter_params: Dict) -> Tuple[np.ndarray, np.ndarray]:
 
 
 def get_expected_label_size(inter_params: Dict) -> Tuple[int, int]:
-    """
-    从相机内参配置推导投影所使用的标签图尺寸，返回 (height, width)。
-    """
     width = int(inter_params['image_width'])
     height = int(inter_params['image_height'])
     if width <= 0 or height <= 0:
@@ -351,16 +239,13 @@ def get_expected_label_size(inter_params: Dict) -> Tuple[int, int]:
 
 
 def build_extrinsic_transform(ext_params: Dict) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    解析相机外参
-    """
     ext_pos = np.array(
         [ext_params['ext_pos_x'], ext_params['ext_pos_y'], ext_params['ext_pos_z']],
-        dtype=np.float64
+        dtype=np.float64,
     )
     ext_quat = np.array(
         [ext_params['ext_q_x'], ext_params['ext_q_y'], ext_params['ext_q_z'], ext_params['ext_q_w']],
-        dtype=np.float64
+        dtype=np.float64,
     )
     return ext_pos, quaternion_to_rotation_matrix(ext_quat)
 
@@ -372,9 +257,6 @@ def transform_global_points_to_camera(
     ext_pos: np.ndarray,
     ext_rot_mat: np.ndarray,
 ) -> np.ndarray:
-    """
-    将全局点云变换到当前相机坐标系
-    """
     pose_rot_mat = quaternion_to_rotation_matrix(pose_quaternion)
     final_rot_mat = np.dot(pose_rot_mat, ext_rot_mat)
     final_pos = pose_position + np.dot(pose_rot_mat, ext_pos)
@@ -384,92 +266,55 @@ def transform_global_points_to_camera(
 
 
 def make_colored_point_cloud(points: np.ndarray, colors: np.ndarray) -> o3d.geometry.PointCloud:
-    """
-    构建带颜色点云对象
-    """
     colored_pcd = o3d.geometry.PointCloud()
     colored_pcd.points = o3d.utility.Vector3dVector(points)
     colored_pcd.colors = o3d.utility.Vector3dVector(colors)
     return colored_pcd
 
 
-# ======================== 投影和插值函数 ========================
-def project_points_to_image(points_3d: np.ndarray,
-                           camera_matrix: np.ndarray,
-                           dist_coeffs: np.ndarray,
-                           image_shape: Tuple[int, int]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    将3D点云投影到2D图像平面
-
-    Returns:
-        Tuple: 2D投影点 (M, 2), 有效点的原始索引 (M,), 相机坐标系下深度 (M,)
-    """
-    # 只保留相机前方的点（z>0）
+# ======================== 投影 ========================
+def project_points_to_image(
+    points_3d: np.ndarray,
+    camera_matrix: np.ndarray,
+    dist_coeffs: np.ndarray,
+    image_shape: Tuple[int, int],
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     valid_indices = points_3d[:, 2] > 0
     valid_points = points_3d[valid_indices]
-
     if len(valid_points) == 0:
         return np.array([]), np.array([], dtype=np.intp), np.array([])
 
-    # 投影到图像平面
     points_2d, _ = cv2.projectPoints(
         valid_points, np.zeros(3), np.zeros(3), camera_matrix, dist_coeffs
     )
     points_2d = points_2d.reshape(-1, 2)
-    depths = valid_points[:, 2]  # 相机z轴深度
+    depths = valid_points[:, 2]
 
-    # 过滤图像范围内的点
     h, w = image_shape[:2]
     in_image = (
         (points_2d[:, 0] >= 0) & (points_2d[:, 0] < w) &
         (points_2d[:, 1] >= 0) & (points_2d[:, 1] < h)
     )
-
     original_indices = np.where(valid_indices)[0][in_image]
     return points_2d[in_image], original_indices, depths[in_image]
 
 
-def zbuffer_filter(points_2d: np.ndarray, depths: np.ndarray,
-                   image_shape: Tuple[int, int]) -> np.ndarray:
-    """
-    Z-buffer 遮挡过滤：对每个像素只保留深度最小（最近）的点
-
-    Args:
-        points_2d: 投影2D坐标 (M, 2)
-        depths: 相机坐标系下的深度 (M,)
-        image_shape: (h, w)
-
-    Returns:
-        np.ndarray: 布尔掩码 (M,)，True 表示该点是其像素上最近的点
-    """
+def zbuffer_filter(
+    points_2d: np.ndarray,
+    depths: np.ndarray,
+    image_shape: Tuple[int, int],
+) -> np.ndarray:
     h, w = image_shape[:2]
     xi = np.clip(np.round(points_2d[:, 0]).astype(np.int32), 0, w - 1)
     yi = np.clip(np.round(points_2d[:, 1]).astype(np.int32), 0, h - 1)
-
-    # 初始化深度缓冲为无穷大
     depth_buffer = np.full((h, w), np.inf, dtype=np.float32)
-
-    # 向量化更新深度缓冲：np.minimum.at 取每个像素的最小深度
     np.minimum.at(depth_buffer, (yi, xi), depths.astype(np.float32))
-
-    # 保留深度在容差范围内的点（容差应对同一表面多个点的微小深度差异）
-    tolerance = 0.15  # 15cm
+    tolerance = 0.15
     keep = depths <= depth_buffer[yi, xi] + tolerance
-
     return keep
 
 
 def round_interpolation_labels(label_map: np.ndarray, points_2d: np.ndarray) -> np.ndarray:
-    """
-    取整插值获取标签ID（向量化）
-
-    Args:
-        label_map: 标签图 (h, w)，值为类别ID
-        points_2d: 2D投影点 (M, 2)
-
-    Returns:
-        np.ndarray: 每个投影点的标签ID (M,)，无效点为-1
-    """
     h, w = label_map.shape[:2]
     xi = np.round(points_2d[:, 0]).astype(int)
     yi = np.round(points_2d[:, 1]).astype(int)
@@ -480,20 +325,9 @@ def round_interpolation_labels(label_map: np.ndarray, points_2d: np.ndarray) -> 
 
 
 def convert_color_mask_to_label_map(mask_bgr: np.ndarray, color_to_class: Dict[int, int]) -> np.ndarray:
-    """
-    将彩色mask(BGR)转换为类别ID标签图
-
-    Args:
-        mask_bgr: 彩色mask图 (h, w, 3)，BGR
-        color_to_class: RGB颜色到类别ID映射
-
-    Returns:
-        np.ndarray: 标签图 (h, w)，无匹配像素为-1
-    """
     rgb = mask_bgr[:, :, ::-1].astype(np.uint32)
     keys = (rgb[:, :, 0] << 16) | (rgb[:, :, 1] << 8) | rgb[:, :, 2]
     labels = np.full(keys.shape, -1, dtype=np.int16)
-
     for key in np.unique(keys):
         class_id = color_to_class.get(int(key), -1)
         if class_id >= 0:
@@ -508,9 +342,6 @@ def load_label_map_for_pose(
     label_cache: "OrderedDict[int, np.ndarray]",
     expected_image_size: Tuple[int, int],
 ) -> Optional[np.ndarray]:
-    """
-    读取并缓存pose对应标签图
-    """
     if pose_timestamp in label_cache:
         label_cache.move_to_end(pose_timestamp)
         return label_cache[pose_timestamp]
@@ -533,7 +364,6 @@ def load_label_map_for_pose(
     if label_map is None:
         return None
 
-    # 标签图必须与投影内参使用的像素坐标系一致；不一致时直接报错，避免静默引入错位。
     target_h, target_w = expected_image_size
     if label_map.shape[0] != target_h or label_map.shape[1] != target_w:
         raise ValueError(
@@ -548,6 +378,86 @@ def load_label_map_for_pose(
         label_cache.popitem(last=False)
     return label_map
 
+
+# =====================================================
+#  法向量过滤：移除地面误投影点
+# =====================================================
+def filter_ground_projection_by_normal(
+    points: np.ndarray,
+    winner_labels: np.ndarray,
+    has_votes: np.ndarray,
+    ground_class_ids: Set[int],
+    class_names: List[str],
+    normal_z_threshold: float = 0.85,
+    normal_knn: int = 30,
+) -> np.ndarray:
+    """
+    对非地面类别的已赋色点，根据法向量过滤地面误投影。
+
+    原理：地面误投影点位于地面表面，其法向量几乎竖直向上(|nz|→1)。
+    而真实物体（树、人、家具等）表面法向量以水平/倾斜为主。
+    对非地面类别中法向量接近竖直的点，判定为地面误投影并移除赋色。
+
+    Args:
+        points: 全局点云坐标 (N, 3)
+        winner_labels: 每点的投票获胜类别 (N,)
+        has_votes: 每点是否有有效赋色 (N,) bool
+        ground_class_ids: 地面类别 ID 集合（这些类别免于过滤）
+        class_names: 类别名称列表
+        normal_z_threshold: |normal_z| 超过此值视为竖直
+        normal_knn: 估计法向量的邻域大小
+
+    Returns:
+        更新后的 has_votes 数组（被过滤的点设为 False）
+    """
+    print("  [法向量过滤] 估计点云法向量...")
+    t0 = time.perf_counter()
+
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(points)
+    pcd.estimate_normals(
+        search_param=o3d.geometry.KDTreeSearchParamKNN(knn=normal_knn)
+    )
+    normals = np.asarray(pcd.normals)
+
+    elapsed = time.perf_counter() - t0
+    print(f"  [法向量过滤] 法向量估计完成: {elapsed:.2f}s")
+
+    # 统一法向量方向：z 分量为正（朝上）
+    flip_mask = normals[:, 2] < 0
+    normals[flip_mask] *= -1
+
+    # 找出非地面类别 + 法向量接近竖直的点
+    is_colored = has_votes.copy()
+    is_non_ground = np.array([
+        (is_colored[i] and winner_labels[i] not in ground_class_ids)
+        for i in range(len(points))
+    ], dtype=bool)
+
+    is_vertical = np.abs(normals[:, 2]) > normal_z_threshold
+    to_filter = is_non_ground & is_vertical
+
+    filtered_count = int(np.sum(to_filter))
+    updated_has_votes = has_votes.copy()
+    updated_has_votes[to_filter] = False
+
+    # 统计每个类别被过滤了多少点
+    if filtered_count > 0:
+        filtered_labels = winner_labels[to_filter]
+        unique_labels, counts = np.unique(filtered_labels, return_counts=True)
+        print(f"  [法向量过滤] 共过滤 {filtered_count} 个地面误投影点:")
+        for label_id, count in sorted(zip(unique_labels, counts), key=lambda x: -x[1]):
+            name = class_names[label_id] if label_id < len(class_names) else f"id_{label_id}"
+            print(f"    {name}: {count}")
+    else:
+        print("  [法向量过滤] 未检测到地面误投影点")
+
+    return updated_has_votes
+
+
+# =====================================================
+#  全帧投票上色
+# =====================================================
 def color_point_cloud_with_majority_vote(
     pcd_file: str,
     pose_records: List[Tuple[int, np.ndarray, np.ndarray]],
@@ -557,10 +467,10 @@ def color_point_cloud_with_majority_vote(
     palette_rgb: np.ndarray,
     color_to_class: Dict[int, int],
     label_cache: "OrderedDict[int, np.ndarray]",
+    class_names: List[str],
+    ground_class_ids: Set[int],
 ) -> Optional[o3d.geometry.PointCloud]:
-    """
-    给全局点云上色：对每个3D点统计所有帧的类别投票，取出现次数最多的类别
-    """
+    """全局点云全帧投票上色 + 法向量过滤"""
     try:
         cloud = o3d.io.read_point_cloud(pcd_file)
         points = np.asarray(cloud.points)
@@ -592,11 +502,8 @@ def color_point_cloud_with_majority_vote(
     for pose_idx in range(total_frames):
         pose_timestamp, pose_position, pose_quaternion = pose_records[pose_idx]
         label_map = load_label_map_for_pose(
-            pose_timestamp,
-            img_path,
-            color_to_class,
-            label_cache,
-            expected_image_size,
+            pose_timestamp, img_path, color_to_class,
+            label_cache, expected_image_size,
         )
         if label_map is None:
             continue
@@ -604,11 +511,12 @@ def color_point_cloud_with_majority_vote(
         points_3d = transform_global_points_to_camera(
             points, pose_position, pose_quaternion, ext_pos, ext_rot_mat
         )
-        points_2d, valid_indices, depths = project_points_to_image(points_3d, camera_matrix, dist_coeffs, label_map.shape)
+        points_2d, valid_indices, depths = project_points_to_image(
+            points_3d, camera_matrix, dist_coeffs, label_map.shape
+        )
         if len(points_2d) == 0:
             continue
 
-        # Z-buffer 遮挡过滤：只保留每个像素上最近的点，防止背景点偷到前景类别
         visible = zbuffer_filter(points_2d, depths, label_map.shape)
         points_2d = points_2d[visible]
         valid_indices = valid_indices[visible]
@@ -639,36 +547,55 @@ def color_point_cloud_with_majority_vote(
             last_report_frame = pose_idx + 1
 
     has_votes = observation_counts >= Config.MIN_VOTES_PER_POINT
-    voted_points = int(np.sum(has_votes))
-    if voted_points == 0:
+    voted_points_before = int(np.sum(has_votes))
+    if voted_points_before == 0:
         print("  警告: 没有可用类别观测")
         return None
 
     winner_labels = np.argmax(vote_counts, axis=1)
+
+    avg_votes = float(observation_counts[has_votes].mean()) if voted_points_before > 0 else 0.0
+    print(
+        f"  全帧投票完成: 有效帧 {used_frames}/{total_frames}，"
+        f"赋色点 {voted_points_before}/{num_points}，平均票数 {avg_votes:.1f}"
+    )
+
+    # ── 法向量过滤 ──
+    if Config.NORMAL_FILTER_ENABLED:
+        has_votes = filter_ground_projection_by_normal(
+            points, winner_labels, has_votes, ground_class_ids, class_names,
+            normal_z_threshold=Config.NORMAL_Z_THRESHOLD,
+            normal_knn=Config.NORMAL_KNN,
+        )
+        voted_points_after = int(np.sum(has_votes))
+        print(
+            f"  法向量过滤后: 赋色点 {voted_points_after}/{num_points} "
+            f"(过滤 {voted_points_before - voted_points_after} 个)"
+        )
+
     all_colors = np.zeros((num_points, 3), dtype=np.float32)
     all_colors[has_votes] = palette_rgb[winner_labels[has_votes]] / 255.0
-
     colored_pcd = make_colored_point_cloud(points, all_colors)
-
-    avg_votes = float(observation_counts[has_votes].mean()) if voted_points > 0 else 0.0
-    print(f"  全帧投票完成: 有效帧 {used_frames}/{total_frames}，赋色点 {voted_points}/{num_points}，平均票数 {avg_votes:.1f}")
-
     return colored_pcd
 
 
+# =====================================================
+#  主函数
+# =====================================================
 def main(global_pcd_path: str, img_path: str) -> None:
-    """
-    主函数：加载全局融合点云，遍历所有帧投票上色，保存结果
-    """
-    # 加载相机参数与类别色盘
     try:
         ext_params, inter_params = load_camera_params()
-        palette_rgb, color_to_class = load_palette_and_lookup()
+        palette_rgb, color_to_class, class_names = load_palette_and_lookup()
     except Exception as e:
         print(f"错误: 加载必要配置失败: {e}")
         return
 
-    # 加载pose
+    ground_class_ids = build_ground_class_ids(class_names)
+    ground_names = [class_names[i] for i in sorted(ground_class_ids) if i < len(class_names)]
+    print(f"地面类别（免于法向量过滤）: {ground_names}")
+    print(f"法向量过滤: {'启用' if Config.NORMAL_FILTER_ENABLED else '禁用'}, "
+          f"阈值={Config.NORMAL_Z_THRESHOLD}, KNN={Config.NORMAL_KNN}")
+
     sorted_pose_files, _ = load_pose_files(img_path)
     pose_records = build_pose_records(sorted_pose_files)
     if not pose_records:
@@ -697,6 +624,8 @@ def main(global_pcd_path: str, img_path: str) -> None:
             palette_rgb=palette_rgb,
             color_to_class=color_to_class,
             label_cache=label_cache,
+            class_names=class_names,
+            ground_class_ids=ground_class_ids,
         )
     except ValueError as e:
         print(f"错误: {e}")
@@ -706,7 +635,7 @@ def main(global_pcd_path: str, img_path: str) -> None:
         return
 
     pcd_stem = os.path.splitext(os.path.basename(global_pcd_path))[0]
-    output_file = os.path.join(res_dir, f"{pcd_stem}_color.pcd")
+    output_file = os.path.join(res_dir, f"{pcd_stem}_color_normal.pcd")
     o3d.io.write_point_cloud(output_file, colored_pcd)
     print(f"\n成功保存彩色全局点云: {output_file}")
 
