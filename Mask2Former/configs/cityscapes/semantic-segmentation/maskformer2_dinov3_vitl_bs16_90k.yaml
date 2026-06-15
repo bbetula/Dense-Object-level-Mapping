@@ -1,0 +1,17 @@
+_BASE_: maskformer2_R50_bs16_90k.yaml
+MODEL:
+  BACKBONE:
+    NAME: "D2DINOv3ViTL"
+    FREEZE_AT: 0
+  DINOV3:
+    WEIGHTS: "/data1/user/Dense-Object-level-Mapping/dinov3-train/weights/vit_large_patch16_dinov3.lvd1689m.pth"
+    OUT_DIM: 256
+    FREEZE_BACKBONE: True
+  WEIGHTS: ""
+  PIXEL_MEAN: [123.675, 116.280, 103.530]
+  PIXEL_STD: [58.395, 57.120, 57.375]
+SOLVER:
+  IMS_PER_BATCH: 8
+  BACKBONE_MULTIPLIER: 1.0
+  AMP:
+    ENABLED: True
