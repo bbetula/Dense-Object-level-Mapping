@@ -9,9 +9,16 @@ echo export DISPLAY=\"localhost:13.0\" >> ~/.bashrc
 
 代理
 查看代理
+clash
 env |grep -i proxy 
+export https_proxy=http://127.0.0.1:7890 http_proxy=http://127.0.0.1:7890 
+all_proxy=socks5://127.0.0.1:7891
+
 清除代理
 unset http_proxy
 unset https_proxy
+unset all_proxy
 
+安装包
+-i https://pypi.tuna.tsinghua.edu.cn/simple
 

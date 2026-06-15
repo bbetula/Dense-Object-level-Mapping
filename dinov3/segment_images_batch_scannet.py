@@ -41,7 +41,7 @@ else:
 # 原理：每帧推理后保存 softmax 概率图，在同一场景内对时序窗口求概率均值，
 # 再 argmax。这样对物体预测不稳定的帧，多帧共识的类别会"覆盖"噪声。
 # 对 ScanNet 场景内连续帧（相机缓慢移动）尤其有效。
-TEMPORAL_VOTE   = True  # 启用时序软投票（两遍处理）
+TEMPORAL_VOTE   = False # 单帧推理；实测 256 概率下采样时序投票会显著降低 ScanNet pixel accuracy
 VOTE_WINDOW     = 5     # ±N 帧，共 2N+1 帧参与平均
 PROB_STORE_SIZE = 256   # 概率图存储分辨率，256²×C×float16 ≈ 18–28 MB/帧
 KEEP_PROBS      = False # 处理完场景后是否保留临时 .npy 概率文件
@@ -53,7 +53,7 @@ KEEP_PROBS      = False # 处理完场景后是否保留临时 .npy 概率文件
 MODE = "ade20k_mapped"  # "ade20k_mapped" | "scannet_native"
 
 SCANNET_ROOT = "/data1/data/scannet/scannet_frames_25k"
-SAVE_ROOT = "/data1/data/scannet/scannet_frames_25k_dinov3_seg"
+SAVE_ROOT = "/data1/data/scannet/scannet_frames_25k_dinov3_seg_v2"
 
 # 模型配置
 BACKBONE_DIR = "checkpoint/dinov3_pretrained/DINOv3 ViT LVD-1689M/dinov3_vit7b16_pretrain_lvd1689m-a955f4ea.pth"
@@ -64,7 +64,7 @@ if MODE == "ade20k_mapped":
     PALETTE_FILE = os.path.join(REPO_DIR, "yaml", "scannet_nyu40.yaml")  # 输出用 NYU40 色盘
 elif MODE == "scannet_native":
     # 训练好 ScanNet head 后填入路径
-    HEAD_DIR = "checkpoint/dinov3_pretrained/DINOv3 Adapters/dinov3_vit7b16_scannet_nyu40_m2f_head.pth"
+    HEAD_DIR = "待定"
     N_OUTPUT_CHANNELS = 41
     PALETTE_FILE = os.path.join(REPO_DIR, "yaml", "scannet_nyu40.yaml")
 
@@ -72,79 +72,33 @@ IMG_SIZE = 1024
 BATCH_SIZE = 8
 # ============================================================
 # ADE20K (0-149) → ScanNet NYU40 (0-40) 映射表
-# ADE20K 模型输出 argmax 后的 class id → NYU40 id
-# 未映射到的 ADE20K 类归为 0 (unlabeled)
+# v2 说明：
+# 1) 输出目录改为 scannet_frames_25k_dinov3_seg_v2。
+# 2) 使用保守 ADE20K→NYU40 映射表；实测过宽映射会把大量区域错压到 wall/floor/cabinet。
+# 3) 仍在 ADE20K 概率空间 argmax 后映射。实测直接把 ADE20K 概率累加到
+#    NYU40 再 argmax 会导致 wall/floor/other 类塌缩，局部精度从约 72% 降到约 38%。
 # ============================================================
-ADE20K_TO_NYU40 = np.zeros(150, dtype=np.uint8)  # 默认全部映射到 0 (unlabeled)
+NYU40_NUM_CLASSES = 41
+ADE20K_TO_NYU40 = np.zeros(150, dtype=np.uint8)
 _mapping = {
-    # ADE20K_id: NYU40_id
-    0: 1,      # wall → wall
-    3: 2,      # floor → floor
-    5: 22,     # ceiling → ceiling
-    7: 4,      # bed → bed
-    8: 9,      # windowpane → window
-    10: 3,     # cabinet → cabinet
-    12: 31,    # person → person
-    14: 8,     # door → door
-    15: 7,     # table → table
-    18: 16,    # curtain → curtain
-    19: 5,     # chair → chair
-    22: 11,    # painting → picture
-    23: 6,     # sofa → sofa
-    24: 15,    # shelf → shelves
-    27: 19,    # mirror → mirror
-    28: 20,    # rug → floor mat
-    30: 5,     # armchair → chair
-    31: 5,     # seat → chair
-    33: 14,    # desk → desk
-    35: 3,     # wardrobe → cabinet
-    36: 35,    # lamp → lamp
-    37: 36,    # bathtub → bathtub
-    38: 38,    # railing → otherstructure
-    39: 18,    # cushion → pillow
-    41: 29,    # box → box
-    42: 38,    # column → otherstructure
-    44: 17,    # chest of drawers → dresser
-    45: 12,    # counter → counter
-    47: 34,    # sink → sink
-    50: 24,    # refrigerator → refrigerator
-    53: 38,    # stairs → otherstructure
-    55: 39,    # case → otherfurniture
-    56: 7,     # pool table → table
-    57: 18,    # pillow → pillow
-    58: 8,     # screen door → door
-    59: 38,    # stairway → otherstructure
-    62: 10,    # bookcase → bookshelf
-    63: 13,    # blind → blinds
-    64: 7,     # coffee table → table
-    65: 33,    # toilet → toilet
-    67: 23,    # book → books
-    70: 12,    # countertop → counter
-    75: 5,     # swivel chair → chair
-    81: 27,    # towel → towel
-    82: 35,    # light → lamp
-    85: 35,    # chandelier → lamp
-    89: 25,    # television receiver → television
-    92: 21,    # apparel → clothes
-    93: 38,    # pole → otherstructure
-    95: 38,    # bannister → otherstructure
-    100: 11,   # poster → picture
-    107: 39,   # washer → otherfurniture
-    110: 39,   # stool → otherfurniture
-    115: 37,   # bag → bag
-    118: 39,   # oven → otherfurniture
-    124: 39,   # microwave → otherfurniture
-    129: 39,   # dishwasher → otherfurniture
-    130: 25,   # screen → television
-    134: 35,   # sconce → lamp
-    141: 25,   # crt screen → television
-    143: 25,   # monitor → television
-    144: 30,   # bulletin board → whiteboard
-    145: 28,   # shower → shower curtain
-    # 其余 ADE20K 类 → 0 (unlabeled)
+    0: 1,    3: 2,    5: 22,   7: 4,    8: 9,
+    10: 3,   12: 31,  14: 8,   15: 7,   18: 16,
+    19: 5,   22: 11,  23: 6,   24: 15,  27: 19,
+    28: 20,  30: 5,   31: 5,   33: 14,  35: 3,
+    36: 35,  37: 36,  38: 38,  39: 18,  41: 29,
+    42: 38,  44: 17,  45: 12,  47: 34,  50: 24,
+    53: 38,  55: 39,  56: 7,   57: 18,  58: 8,
+    59: 38,  62: 10,  63: 13,  64: 7,   65: 33,
+    67: 23,  70: 12,  75: 5,   81: 27,  82: 35,
+    85: 35,  89: 25,  92: 21,  93: 38,  95: 38,
+    100: 11, 107: 39, 110: 39, 115: 37, 118: 39,
+    124: 39, 129: 39, 130: 25, 134: 35, 141: 25,
+    143: 25, 144: 30, 145: 28, 146: 39,
 }
 for ade_id, nyu_id in _mapping.items():
     ADE20K_TO_NYU40[ade_id] = nyu_id
+
+PRED_OUTPUT_CHANNELS = N_OUTPUT_CHANNELS
 
 # 工具函数
 def make_transform(resize_size: int = 768):
@@ -258,7 +212,7 @@ for scene_name in scene_dirs:
                         output_activation=partial(torch.nn.functional.softmax, dim=1),
                     )  # [B, C, IMG_SIZE, IMG_SIZE]
                 pred_small = prob_pool(pred_batch.float()).cpu().numpy().astype(np.float16)
-                # shape: [B, C, PROB_STORE_SIZE, PROB_STORE_SIZE]
+                # shape: [B, 150, PROB_STORE_SIZE, PROB_STORE_SIZE]
 
             for idx, img_name in enumerate(batch_files):
                 base = os.path.splitext(img_name)[0]
@@ -272,18 +226,17 @@ for scene_name in scene_dirs:
             lo = max(0, i - VOTE_WINDOW)
             hi = min(len(all_files), i + VOTE_WINDOW + 1)
 
-            # 在原始类别空间（ADE20K 150维 或 NYU40 41维）内累加概率
-            acc = np.zeros((N_OUTPUT_CHANNELS, PROB_STORE_SIZE, PROB_STORE_SIZE), dtype=np.float32)
+            # 在 ADE20K 概率空间内时序平均，再 argmax 后映射到 NYU40。
+            acc = np.zeros((PRED_OUTPUT_CHANNELS, PROB_STORE_SIZE, PROB_STORE_SIZE), dtype=np.float32)
             for j in range(lo, hi):
                 acc += np.load(os.path.join(PROB_DIR, f"{base_names[j]}.npy")).astype(np.float32)
             avg_prob = acc / (hi - lo)  # [C, PS, PS]
 
-            # 先在原始类别空间 argmax，再做 ADE20K→NYU40 映射（顺序很重要！）
-            mask = avg_prob.argmax(axis=0).astype(np.uint8)
+            ade20k_mask = avg_prob.argmax(axis=0).astype(np.uint8)
             if MODE == "ade20k_mapped":
-                nyu40_mask = map_ade20k_to_nyu40(mask)
+                nyu40_mask = map_ade20k_to_nyu40(ade20k_mask)
             else:
-                nyu40_mask = mask
+                nyu40_mask = ade20k_mask
 
             orig_w, orig_h = scene_orig_sizes[base]
             nyu40_mask_resized = cv2.resize(nyu40_mask, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)

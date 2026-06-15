@@ -102,23 +102,32 @@ def process_single_pcd(file_path: str,
         if len(valid_colors_255) == 0:
             return result
 
-        distance_threshold = np.sqrt(3 * color_tolerance ** 2)
-        color_distances = np.sqrt(
-            np.sum((valid_colors_255[:, None] - category_colors[None, :]) ** 2, axis=2)
-        )
-        min_distances = np.min(color_distances, axis=1)
-        point_categories = np.where(
-            min_distances <= distance_threshold,
-            np.argmin(color_distances, axis=1),
-            -1
-        )
+        dist_sq_threshold = 3 * color_tolerance ** 2
+        n_points = len(valid_colors_255)
+        point_categories = np.full(n_points, -1, dtype=np.int32)
+        CHUNK = 500_000
+
+        for start in range(0, n_points, CHUNK):
+            chunk = valid_colors_255[start:start + CHUNK]
+            dists_sq = np.sum((chunk[:, None] - category_colors[None, :]) ** 2, axis=2)
+            min_dists_sq = np.min(dists_sq, axis=1)
+            min_cats = np.argmin(dists_sq, axis=1)
+            point_categories[start:start + len(chunk)] = np.where(
+                min_dists_sq <= dist_sq_threshold, min_cats, -1
+            )
 
         valid_cats = point_categories[point_categories >= 0]
         result["category_counts"] = np.bincount(valid_cats, minlength=len(category_colors))
         result["classified_count"] = int(np.sum(result["category_counts"]))
         unclassified_mask = point_categories == -1
         result["unclassified_count"] = int(np.sum(unclassified_mask))
-        result["other_rgb_counter"] = Counter(map(tuple, valid_colors_255[unclassified_mask].tolist()))
+
+        other_rgb = valid_colors_255[unclassified_mask]
+        if len(other_rgb) > 200_000:
+            rng = np.random.default_rng(42)
+            sample_idx = rng.choice(len(other_rgb), 200_000, replace=False)
+            other_rgb = other_rgb[sample_idx]
+        result["other_rgb_counter"] = Counter(map(tuple, other_rgb.tolist()))
         result["success"] = True
 
     except Exception as e:

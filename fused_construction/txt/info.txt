@@ -1,35 +1,59 @@
-输入文件: /data1/user/data/fastlivo_output_qs2_03.17/lidar/res/all_raw_qs2_03.17_color.pcd
+输入文件: /data1/user/data/2026.05.28_655/点云图片文件/fastlivo_output_2026.05.29_2slow/lidar/res/all_raw_points_color_normal_no_vote.pcd
 颜色容差: ±7
 ------------------------------------------------------------
 类别统计结果
 ------------------------------------------------------------
 类别                        点数              占比        
 ------------------------------------------------------------
-wall                      6176858         52.22%
-floor                     3238345         27.38%
-ceiling                   1291267         10.92%
-tree                      555913          4.70%
-fence                     291453          2.46%
-person                    95596           0.81%
-box                       90683           0.77%
-column                    28525           0.24%
-door                      21682           0.18%
-windowpane                16385           0.14%
-table                     10999           0.09%
-light                     4590            0.04%
-shelf                     2744            0.02%
-plant                     1671            0.01%
-lamp                      1451            0.01%
-chair                     899             0.01%
-painting                  188             0.00%
-base                      135             0.00%
-bench                     67              0.00%
-building                  35              0.00%
-crt screen                8               0.00%
-blanket                   2               0.00%
+wall                      3901489         31.41%
+floor                     2290084         18.44%
+chair                     1355016         10.91%
+cabinet                   1122481         9.04%
+curtain                   772301          6.22%
+table                     746576          6.01%
+door                      440348          3.55%
+ceiling                   323632          2.61%
+radiator                  260222          2.09%
+bookcase                  246721          1.99%
+windowpane                191933          1.55%
+signboard                 159298          1.28%
+crt screen                149383          1.20%
+television receiver       100590          0.81%
+plant                     92739           0.75%
+book                      79149           0.64%
+swivel chair              39217           0.32%
+pot                       31241           0.25%
+desk                      30506           0.25%
+screen                    26648           0.21%
+monitor                   14695           0.12%
+mirror                    8717            0.07%
+apparel                   7494            0.06%
+box                       6532            0.05%
+clock                     4911            0.04%
+flag                      3623            0.03%
+column                    2485            0.02%
+tray                      2358            0.02%
+computer                  2270            0.02%
+armchair                  1733            0.01%
+bottle                    1714            0.01%
+railing                   1230            0.01%
+shelf                     1085            0.01%
+bag                       1083            0.01%
+towel                     734             0.01%
+light                     509             0.00%
+bulletin board            508             0.00%
+fan                       158             0.00%
+plate                     104             0.00%
+basket                    71              0.00%
+vase                      36              0.00%
+glass                     23              0.00%
+blanket                   3               0.00%
+case                      2               0.00%
+sink                      1               0.00%
+arcade machine            1               0.00%
 其他                        0               0.00%
 ------------------------------------------------------------
-有效点总数: 11829496
-跳过的黑色点总数: 141509
+有效点总数: 12421654
+跳过的黑色点总数: 2188625
 跳过的其他类别点总数: 0
-总处理时间: 89.45 秒
+总处理时间: 66.06 秒

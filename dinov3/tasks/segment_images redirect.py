@@ -13,7 +13,7 @@ import torchvision.transforms.v2 as v2
 import os
 import cv2
 import numpy as np
-from ADE20k_2_mydataset import redirect_ade2city
+from dinov3.utils.ADE20k_2_mydataset import redirect_ade2city
 
 def make_transform(resize_size: int | list[int] = 768):
     to_tensor = v2.ToImage()

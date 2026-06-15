@@ -2,24 +2,30 @@
 COLOR_TOLERANCE = 7  # 每个RGB通道允许的误差 ADE20K:7
 DEFAULT_MAP_PATHS = {
     "indoor1": "/data1/user/data/fastlivo_output_indoor_107/lidar/res",
+    "indoor2": "/data1/user/data/2026.05.28_655/点云图片文件/fastlivo_output_2026.05.29_2slow/lidar/res",
     "outdoor1": "/data1/user/data/fastlivo_output_outdoor_1s/lidar/res",
     "outdoor2": "/data1/user/data/fastlivo_output_qs2_03.17/lidar/res",
+    "outdoor3": "/data1/user/data/2026.05.10_机狗二次数据采集结果_标定/lidar/res",
 }
 # 全局融合点云路径
 GLOBAL_PCD_PATHS = {
     "indoor1": "/data1/user/data/fastlivo_output_indoor_107/all_original.pcd",
+    "indoor2": "/data1/user/data/2026.05.28_655/总pcd文件/2026.05.29_2_slow/all_raw_points.pcd",
     "outdoor1": "/data1/user/data/fastlivo_output_outdoor_1s/all_original.pcd",
     "outdoor2": "/data1/user/data/fastlivo_output_qs2_03.17/all_raw_qs2_03.17.pcd",
+    "outdoor3": "/data1/user/data/2026.05.10_机狗二次数据采集结果_标定/all_raw_points.pcd",
 }
 # 默认图像路径（用于2D-3D投影生成语义点云）
 DEFAULT_IMG_PATHS = {
     "indoor1": "/data1/user/data/fastlivo_output_indoor_107/image",
+    "indoor2": "/data1/user/data/2026.05.28_655/点云图片文件/fastlivo_output_2026.05.29_2slow/image",
     "outdoor1": "/data1/user/data/fastlivo_output_outdoor_1s/image",
     "outdoor2": "/data1/user/data/fastlivo_output_qs2_03.17/image", #1.3h
+    "outdoor3": "/data1/user/data/2026.05.10_机狗二次数据采集结果_标定/image",
 }
 
 LABEL_CHOICE = "ADE20K"  # "ADE20K" or "SCANNET_NYU40"
-DATA_CHOICE = "outdoor2"
+DATA_CHOICE = "indoor2"
 # 配置pipeline路径
 
 # (1)二维图像语义分割
@@ -33,18 +39,22 @@ DEFAULT_MAP_PATH = DEFAULT_MAP_PATHS[DATA_CHOICE]
 
 # 手持设备：Handheld_device_config indoor1 outdoor1
 # 无人机配置文件：Drone_newcam_config outdoor2
+# 机狗臂配置文件：机狗臂_new_config outdoor3
 
-DEFAULT_YAML_PATH = "Drone_newcam_config"
-# DEFAULT_YAML_PATH = "Handheld_device_config"
+DEFAULT_YAML_PATH = "config/indoor2"
+# DEFAULT_YAML_PATH = "config/Drone_newcam_config"
+# DEFAULT_YAML_PATH = "config/Handheld_device_config"
+# DEFAULT_YAML_PATH = "config/机狗臂_config" 2026.03.06_机狗_飞场数据_测精度
+# DEFAULT_YAML_PATH = "config/机狗臂_new_config"
 
 # (3)点云hdbscan聚类
+
 # scannet
 # input_scenes_dir = "/data1/data/scannet/output_bbox/pcd_from_ply"
 # input_scenes_dir = "/data1/data/scannet/output_single_bbox/pcd_from_ply"
 
 
 # ade20k
-
 OUTSCENE = False
 input_scenes_dir = "/data1/user/data/fastlivo_output_qs2_03.17/lidar/test"
 

@@ -31,9 +31,9 @@ elif LABEL_CHOICE == "ADE20K":
 
     CATEGORIES = ADE20K_CATEGORIES
 
-    EXCLUDE_CATEGORIES = {
-        "wall", "floor", "ceiling", "fence"
-    }
+    # EXCLUDE_CATEGORIES = {
+    #     "wall", "floor", "ceiling", "fence"
+    # }
 
     # ── 室内场景：只检测独立物体，排除墙/天花板附着结构 ──
     INSCENE_CATEGORIES = {

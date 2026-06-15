@@ -5,7 +5,7 @@ import numpy as np
 import open3d as o3d
 
 # ===== 配置区 =====
-INPUT_DIR = Path("/data1/data/scannet/output/label_ply")
+INPUT_DIR = Path("/data1/user/Dense-Object-level-Mapping/fused_construction/results/scannet_0000/temp")
 OUTPUT_DIR = INPUT_DIR.parent / "pcd_from_ply"
 RECURSIVE = False
 WRITE_ASCII = False

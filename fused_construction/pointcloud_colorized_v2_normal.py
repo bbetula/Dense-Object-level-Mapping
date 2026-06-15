@@ -1,13 +1,12 @@
 """
-全局点云全帧投票上色 + 3D法向量过滤地面误投影
+全局点云全帧投影上色（可选全局投票）+ 3D法向量过滤地面误投影
 
 与 pointcloud_colorized_v2.py 的区别：
-  - 投票完成后，对非地面类别的点做法向量检测
+  - 全帧投影后，对非地面类别的点做法向量检测
   - 法向量接近竖直向上的点 → 判定为地面误投影 → 不赋色
   - 解决"悬垂遮挡投影"问题（腐蚀无法解决的类型）
 """
 import os
-import sys
 import glob
 import time
 import yaml
@@ -34,6 +33,8 @@ class Config:
     CONFIG_TXT_PATH = os.path.join(DEFAULT_YAML_PATH, "config.txt")
     RES_SUBDIR = "res"
 
+    # True: 读取全局点云并多帧投票；False: 逐帧读取 image 同级 lidar/*.pcd 单帧投影
+    GLOBAL_VOTE_ENABLED = False
     MIN_VOTES_PER_POINT = 5
     LABEL_CACHE_SIZE = 32
     PROGRESS_INTERVAL = 50
@@ -214,6 +215,19 @@ def resolve_output_root(global_pcd_path: str) -> str:
     if os.path.basename(os.path.normpath(pcd_dir)) == "lidar":
         return pcd_dir
     return os.path.join(pcd_dir, "lidar")
+
+
+def resolve_frame_pcd_dir(img_path: str) -> str:
+    """逐帧 PCD 默认位于 image 目录同级的 lidar 目录。"""
+    frame_pcd_dir = os.path.join(os.path.dirname(os.path.normpath(img_path)), "lidar")
+    if not os.path.isdir(frame_pcd_dir):
+        raise FileNotFoundError(f"逐帧PCD目录不存在: {frame_pcd_dir}")
+    return frame_pcd_dir
+
+
+def find_frame_pcd_file(pose_timestamp: int, frame_pcd_dir: str) -> Optional[str]:
+    pcd_file = os.path.join(frame_pcd_dir, f"{pose_timestamp}.pcd")
+    return pcd_file if os.path.exists(pcd_file) else None
 
 
 def build_camera_model(inter_params: Dict) -> Tuple[np.ndarray, np.ndarray]:
@@ -456,9 +470,9 @@ def filter_ground_projection_by_normal(
 
 
 # =====================================================
-#  全帧投票上色
+#  全帧投影上色（可选全局投票）
 # =====================================================
-def color_point_cloud_with_majority_vote(
+def color_global_point_cloud_with_majority_vote(
     pcd_file: str,
     pose_records: List[Tuple[int, np.ndarray, np.ndarray]],
     img_path: str,
@@ -470,7 +484,7 @@ def color_point_cloud_with_majority_vote(
     class_names: List[str],
     ground_class_ids: Set[int],
 ) -> Optional[o3d.geometry.PointCloud]:
-    """全局点云全帧投票上色 + 法向量过滤"""
+    """读取全局点云，对所有有效帧做多数投票上色。"""
     try:
         cloud = o3d.io.read_point_cloud(pcd_file)
         points = np.asarray(cloud.points)
@@ -553,7 +567,6 @@ def color_point_cloud_with_majority_vote(
         return None
 
     winner_labels = np.argmax(vote_counts, axis=1)
-
     avg_votes = float(observation_counts[has_votes].mean()) if voted_points_before > 0 else 0.0
     print(
         f"  全帧投票完成: 有效帧 {used_frames}/{total_frames}，"
@@ -579,6 +592,146 @@ def color_point_cloud_with_majority_vote(
     return colored_pcd
 
 
+def color_frame_point_clouds_without_vote(
+    frame_pcd_dir: str,
+    pose_records: List[Tuple[int, np.ndarray, np.ndarray]],
+    img_path: str,
+    ext_params: Dict,
+    inter_params: Dict,
+    palette_rgb: np.ndarray,
+    color_to_class: Dict[int, int],
+    label_cache: "OrderedDict[int, np.ndarray]",
+    class_names: List[str],
+    ground_class_ids: Set[int],
+) -> Optional[o3d.geometry.PointCloud]:
+    """逐帧读取 PCD，每帧只投影自身点云，不做全局多数投票。"""
+    camera_matrix, dist_coeffs = build_camera_model(inter_params)
+    ext_pos, ext_rot_mat = build_extrinsic_transform(ext_params)
+    expected_image_size = get_expected_label_size(inter_params)
+    num_classes = int(palette_rgb.shape[0])
+
+    total_frames = len(pose_records)
+    used_frames = 0
+    missing_pcd_frames = 0
+    total_points = 0
+    colored_points = 0
+    points_chunks = []
+    colors_chunks = []
+    labels_chunks = []
+    has_votes_chunks = []
+
+    stage_start_time = time.perf_counter()
+    chunk_start_time = stage_start_time
+    last_report_frame = 0
+
+    for pose_idx, (pose_timestamp, pose_position, pose_quaternion) in enumerate(pose_records):
+        pcd_file = find_frame_pcd_file(pose_timestamp, frame_pcd_dir)
+        if pcd_file is None:
+            missing_pcd_frames += 1
+            continue
+
+        label_map = load_label_map_for_pose(
+            pose_timestamp, img_path, color_to_class,
+            label_cache, expected_image_size,
+        )
+        if label_map is None:
+            continue
+
+        try:
+            cloud = o3d.io.read_point_cloud(pcd_file)
+            points = np.asarray(cloud.points).copy()
+        except Exception as e:
+            print(f"警告: 加载逐帧PCD失败 {pcd_file}: {e}")
+            continue
+
+        if len(points) == 0:
+            continue
+
+        points_3d = transform_global_points_to_camera(
+            points, pose_position, pose_quaternion, ext_pos, ext_rot_mat
+        )
+        points_2d, valid_indices, depths = project_points_to_image(
+            points_3d, camera_matrix, dist_coeffs, label_map.shape
+        )
+
+        all_colors = np.zeros((len(points), 3), dtype=np.float32)
+        frame_labels = np.full(len(points), -1, dtype=np.int16)
+        frame_has_votes = np.zeros(len(points), dtype=bool)
+
+        if len(points_2d) > 0:
+            visible = zbuffer_filter(points_2d, depths, label_map.shape)
+            points_2d = points_2d[visible]
+            valid_indices = valid_indices[visible]
+
+            labels = round_interpolation_labels(label_map, points_2d)
+            valid_label_mask = (labels >= 0) & (labels < num_classes)
+            if np.any(valid_label_mask):
+                valid_point_indices = valid_indices[valid_label_mask]
+                valid_labels = labels[valid_label_mask].astype(np.int64)
+                all_colors[valid_point_indices] = palette_rgb[valid_labels] / 255.0
+                frame_labels[valid_point_indices] = valid_labels
+                frame_has_votes[valid_point_indices] = True
+
+        points_chunks.append(points)
+        colors_chunks.append(all_colors)
+        labels_chunks.append(frame_labels)
+        has_votes_chunks.append(frame_has_votes)
+        total_points += len(points)
+        colored_points += int(np.sum(frame_has_votes))
+        used_frames += 1
+
+        if (pose_idx + 1) % Config.PROGRESS_INTERVAL == 0 or pose_idx == total_frames - 1:
+            now = time.perf_counter()
+            chunk_frames = (pose_idx + 1) - last_report_frame
+            chunk_elapsed = now - chunk_start_time
+            total_elapsed = now - stage_start_time
+            print(
+                f"  逐帧投影进度: {pose_idx + 1}/{total_frames} 帧，已用帧: {used_frames}，"
+                f"累计点数: {total_points}，赋色点: {colored_points}，"
+                f"最近{chunk_frames}帧耗时: {chunk_elapsed:.2f}s，"
+                f"平均: {chunk_elapsed / max(chunk_frames, 1):.3f}s/帧，"
+                f"累计: {total_elapsed:.2f}s"
+            )
+            chunk_start_time = now
+            last_report_frame = pose_idx + 1
+
+    if not points_chunks:
+        print("  警告: 没有可用逐帧PCD观测")
+        return None
+
+    points = np.vstack(points_chunks)
+    all_colors = np.vstack(colors_chunks)
+    winner_labels = np.concatenate(labels_chunks)
+    has_votes = np.concatenate(has_votes_chunks)
+    del points_chunks, colors_chunks, labels_chunks, has_votes_chunks
+    voted_points_before = int(np.sum(has_votes))
+
+    if voted_points_before == 0:
+        print("  警告: 没有可用类别观测")
+        return None
+
+    print(
+        f"  逐帧投影完成: 有效帧 {used_frames}/{total_frames}，"
+        f"缺失PCD帧 {missing_pcd_frames}，赋色点 {voted_points_before}/{len(points)}"
+    )
+
+    if Config.NORMAL_FILTER_ENABLED:
+        has_votes = filter_ground_projection_by_normal(
+            points, winner_labels, has_votes, ground_class_ids, class_names,
+            normal_z_threshold=Config.NORMAL_Z_THRESHOLD,
+            normal_knn=Config.NORMAL_KNN,
+        )
+        voted_points_after = int(np.sum(has_votes))
+        all_colors[~has_votes] = 0.0
+        print(
+            f"  法向量过滤后: 赋色点 {voted_points_after}/{len(points)} "
+            f"(过滤 {voted_points_before - voted_points_after} 个)"
+        )
+
+    colored_pcd = make_colored_point_cloud(points, all_colors)
+    return colored_pcd
+
+
 # =====================================================
 #  主函数
 # =====================================================
@@ -595,6 +748,7 @@ def main(global_pcd_path: str, img_path: str) -> None:
     print(f"地面类别（免于法向量过滤）: {ground_names}")
     print(f"法向量过滤: {'启用' if Config.NORMAL_FILTER_ENABLED else '禁用'}, "
           f"阈值={Config.NORMAL_Z_THRESHOLD}, KNN={Config.NORMAL_KNN}")
+    print(f"全局投票: {'启用' if Config.GLOBAL_VOTE_ENABLED else '禁用'}")
 
     sorted_pose_files, _ = load_pose_files(img_path)
     pose_records = build_pose_records(sorted_pose_files)
@@ -602,12 +756,25 @@ def main(global_pcd_path: str, img_path: str) -> None:
         print("错误: 无有效pose文件，退出")
         return
 
-    print(f"全局点云: {global_pcd_path}")
+    frame_pcd_dir = None
+    if Config.GLOBAL_VOTE_ENABLED:
+        print(f"全局点云: {global_pcd_path}")
+    else:
+        try:
+            frame_pcd_dir = resolve_frame_pcd_dir(img_path)
+        except FileNotFoundError as e:
+            print(f"错误: {e}")
+            return
+        print(f"逐帧PCD目录: {frame_pcd_dir}")
+
     print(f"pose帧数: {len(pose_records)}")
-    print(f"最少票数: {Config.MIN_VOTES_PER_POINT}，类别数: {len(palette_rgb)}")
+    if Config.GLOBAL_VOTE_ENABLED:
+        print(f"最少票数: {Config.MIN_VOTES_PER_POINT}，类别数: {len(palette_rgb)}")
+    else:
+        print(f"赋色策略: 逐帧PCD单帧投影，类别数: {len(palette_rgb)}")
     print(f"投影标签尺寸: {inter_params['image_width']}x{inter_params['image_height']}")
 
-    output_root = resolve_output_root(global_pcd_path)
+    output_root = resolve_output_root(global_pcd_path) if Config.GLOBAL_VOTE_ENABLED else frame_pcd_dir
     res_dir = os.path.join(output_root, Config.RES_SUBDIR)
     os.makedirs(res_dir, exist_ok=True)
     print(f"输出目录: res={res_dir}")
@@ -615,18 +782,32 @@ def main(global_pcd_path: str, img_path: str) -> None:
     label_cache: "OrderedDict[int, np.ndarray]" = OrderedDict()
 
     try:
-        colored_pcd = color_point_cloud_with_majority_vote(
-            pcd_file=global_pcd_path,
-            pose_records=pose_records,
-            img_path=img_path,
-            ext_params=ext_params,
-            inter_params=inter_params,
-            palette_rgb=palette_rgb,
-            color_to_class=color_to_class,
-            label_cache=label_cache,
-            class_names=class_names,
-            ground_class_ids=ground_class_ids,
-        )
+        if Config.GLOBAL_VOTE_ENABLED:
+            colored_pcd = color_global_point_cloud_with_majority_vote(
+                pcd_file=global_pcd_path,
+                pose_records=pose_records,
+                img_path=img_path,
+                ext_params=ext_params,
+                inter_params=inter_params,
+                palette_rgb=palette_rgb,
+                color_to_class=color_to_class,
+                label_cache=label_cache,
+                class_names=class_names,
+                ground_class_ids=ground_class_ids,
+            )
+        else:
+            colored_pcd = color_frame_point_clouds_without_vote(
+                frame_pcd_dir=frame_pcd_dir,
+                pose_records=pose_records,
+                img_path=img_path,
+                ext_params=ext_params,
+                inter_params=inter_params,
+                palette_rgb=palette_rgb,
+                color_to_class=color_to_class,
+                label_cache=label_cache,
+                class_names=class_names,
+                ground_class_ids=ground_class_ids,
+            )
     except ValueError as e:
         print(f"错误: {e}")
         return
@@ -635,17 +816,11 @@ def main(global_pcd_path: str, img_path: str) -> None:
         return
 
     pcd_stem = os.path.splitext(os.path.basename(global_pcd_path))[0]
-    output_file = os.path.join(res_dir, f"{pcd_stem}_color_normal.pcd")
+    output_suffix = "_color_normal" if Config.GLOBAL_VOTE_ENABLED else "_color_normal_no_vote"
+    output_file = os.path.join(res_dir, f"{pcd_stem}{output_suffix}.pcd")
     o3d.io.write_point_cloud(output_file, colored_pcd)
     print(f"\n成功保存彩色全局点云: {output_file}")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) >= 3:
-        global_pcd_path = sys.argv[1]
-        img_path = sys.argv[2]
-    else:
-        global_pcd_path = GLOBAL_PCD_PATH
-        img_path = DEFAULT_IMG_PATH
-
-    main(global_pcd_path, img_path)
+    main(GLOBAL_PCD_PATH, DEFAULT_IMG_PATH)
